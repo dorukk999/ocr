@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 from google import genai
@@ -61,7 +60,7 @@ active_schema = OFFICIAL_SCHEMA_ORDER.copy()
 if custom_field:
     active_schema.insert(15, custom_field)
 
-# Dosya Yükleme Alanı (Birden fazla dosya biriktirilebilir)
+# Dosya Yükleme Alanı
 uploaded_files = st.file_uploader("Click to Add Documents (You can select multiple files)", type=["png", "jpg", "jpeg"], accept_multiple_files=True)
 
 # Tekil Dosya İşleme Fonksiyonu (Python Backend)
@@ -87,8 +86,7 @@ def process_file_backend(file, key, model_name):
         )
         
         # Gelen yanıtı temizle ve JSON'a çevir
-        clean_text = response.text.replace("```json", "").replace("
-```", "").strip()
+        clean_text = response.text.replace("```json", "").replace("```", "").strip()
         extracted_json = json.loads(clean_text)
         
         # Şemaya tam uyumluluk sağla
@@ -154,7 +152,7 @@ if st.button("🚀 Run Extraction Pipeline", type="primary"):
             # --- KONSOLİDASYON FİLTRESİ ---
             if enable_consolidation and "Full Name" in df.columns:
                 df['Full Name'] = df['Full Name'].astype(str).str.strip().str.upper()
-                # Aynı isimdeki satırları birleştir (Boş olmayan verileri koru / çakışanları '/' ile ayır)
+                # Aynı isimdeki satırları birleştir
                 df = df.groupby('Full Name').agg(lambda x: ' / '.join(set(x.astype(str).str.strip()))).reset_index()
                 # Kolon sıralamasını koru
                 df = df[cols]
@@ -163,7 +161,7 @@ if st.button("🚀 Run Extraction Pipeline", type="primary"):
             st.success(f"Successfully processed {len(df)} profiles!")
             st.dataframe(df, use_container_width=True)
             
-            # Excel İndirme Butonu
+            # Excel/CSV İndirme Butonu
             @st.cache_data
             def convert_df(df_to_download):
                 return df_to_download.to_csv(index=False).encode('utf-8')
