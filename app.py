@@ -78,15 +78,14 @@ uploaded_files = st.file_uploader("Click to Add Documents (You can select multip
 # Single File Processing Backend Motor
 def process_file_backend(file, incoming_key, model_name):
     try:
-        # Bağlantı parametresi düzeltildi (incoming_key)
+        # Bağlantı parametresi (incoming_key)
         client = genai.Client(api_key=incoming_key)
         
         # Read file assets and convert to Base64
         file_bytes = file.read()
         base64_data = base64.b64encode(file_bytes).decode("utf-8")
         
-        # Geliştirilmiş İki Aşamalı Akıllı Prompt Yapısı
-       # Geliştirilmiş Tüm Belgelere Karşı Sıfır Toleranslı Akıllı Prompt Yapısı
+        # Geliştirilmiş Tüm Belgelere Karşı Sıfır Toleranslı Akıllı Prompt Yapısı
         schema_prompt = f"""You are an advanced corporate OCR text extraction engine with zero-tolerance for data misplacement or digit hallucination. 
         Analyze the document image step-by-step:
         
@@ -104,7 +103,7 @@ def process_file_backend(file, incoming_key, model_name):
         2. You must transcribe the numbers EXACTLY as they are visually printed on the card. 
         3. If a digit or character is blurry or corrupted and you are not 100% certain, extract what you can visually confirm and explicitly document your doubt inside the 'Remarks for unclear or doubtful fields' section. Never invent numbers.
         4. Return a single flat JSON object where keys EXACTLY match these names (case-sensitive): {json.dumps(active_schema)}. 
-        5. If a field does not apply to the identified document type or is missing from the image, explicitly set its value to "-". Do not omit or skip any key."""opulated properly."""
+        5. If a field does not apply to the identified document type or is missing from the image, explicitly set its value to "-". Do not omit or skip any key."""
         
         response = client.models.generate_content(
             model=model_name,
