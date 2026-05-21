@@ -71,7 +71,7 @@ if custom_field:
 # File Uploader Asset
 uploaded_files = st.file_uploader("Click to Add Documents (You can select multiple files)", type=["png", "jpg", "jpeg"], accept_multiple_files=True)
 
-# Görüntü Boyutunu Küçülterek Sistemi Hafifleten Motor (RAM kopyasıyla çalışır)
+# Görüntü Boyutunu ve Kalitesini Optimize Eden Motor (Rakam güvenliği için %95 netlik)
 def optimize_image(file_bytes):
     img = Image.open(io.BytesIO(file_bytes))
     if img.mode in ("RGBA", "P"):
@@ -82,7 +82,8 @@ def optimize_image(file_bytes):
         img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
     
     buffer = io.BytesIO()
-    img.save(buffer, format="JPEG", quality=85)
+    # CRITICAL UPDATE: Kalite %95'e çıkarıldı, ince yazılar korundu.
+    img.save(buffer, format="JPEG", quality=95)
     return buffer.getvalue()
 
 # Single File Processing Backend Motor - Refactored for Thread-Safe Bytes
@@ -90,7 +91,7 @@ def process_file_backend(file_bytes, unique_filename, incoming_key, model_name, 
     try:
         client = genai.Client(api_key=incoming_key)
         
-        # Güvenli byte verisi üzerinden görsel sıkıştırma adımı
+        # Optimize edilmiş yüksek netlikteki byte verisi kullanımı
         optimized_bytes = optimize_image(file_bytes)
         base64_data = base64.b64encode(optimized_bytes).decode("utf-8")
         
@@ -158,7 +159,7 @@ if st.button("🚀 Run Extraction Pipeline", type="primary"):
         for f in uploaded_files:
             orig_name = f.name
             
-            # Bağlantı kopmasını önlemek için içeriği erkenden RAM'e kopyalıyoruz
+            # Streamlit I/O hatasını önlemek için içeriği erkenden RAM'e kopyalıyoruz
             in_memory_bytes = f.read()
             
             if orig_name not in name_counts:
@@ -216,7 +217,7 @@ if st.button("🚀 Run Extraction Pipeline", type="primary"):
                 current_df = current_df[cols_order]
                 table_placeholder.dataframe(current_df, use_container_width=True)
             
-            # KOTA KORUMASI BEKLEME SÜRESİ (35 SANİYE - KENDİ TESTLERİN İÇİN)
+            # KOTA KORUMASI BEKLEME SÜRESİ (Ücretsiz katman testlerin için 35 saniye)
             if api_mode == "Live Production Mode" and (i + BATCH_SIZE) < total_files:
                 status_text.markdown("⏳ **Google Kota Koruması Devrede:** Ücretsiz API hız limiti yememek için sistem **35 saniye** dinleniyor...")
                 time.sleep(35)
