@@ -139,15 +139,14 @@ if st.button("🚀 Run Extraction Pipeline", type="primary"):
         raw_results = []
         total_files = len(uploaded_files)
         
-        # Ekranın donmasını engellemek için canlı durum alanları oluşturuyoruz
+        # Canlı durum alanları
         progress_bar = st.progress(0)
         status_text = st.empty()
-        table_placeholder = st.empty() # Canlı tablo önizleme alanı
+        table_placeholder = st.empty() 
         
-        # BATCH SIZE: Ücretsiz katmanda donmayı önleyecek en ideal paket boyutu (5'er döküman)
+        # BATCH SIZE: Ücretsiz katman için en ideal paket boyutu
         BATCH_SIZE = 5
         
-        # Dosyaları paketlere bölüyoruz
         for i in range(0, total_files, BATCH_SIZE):
             batch = uploaded_files[i:i+BATCH_SIZE]
             status_text.markdown(f"🔄 **Sistem Yükü Dengeleniyor:** {i} / {total_files} döküman tamamlandı. Yeni paket işleniyor...")
@@ -164,7 +163,7 @@ if st.button("🚀 Run Extraction Pipeline", type="primary"):
                     for f in batch:
                         res = process_file_backend(f, gemini_key, TARGET_MODEL)
                         batch_results.append(res)
-                        time.sleep(1) # Paket içi hafif bekleme
+                        time.sleep(1) 
             else:
                 for f in batch:
                     mock_row = {col: "-" for col in active_schema}
@@ -178,11 +177,10 @@ if st.button("🚀 Run Extraction Pipeline", type="primary"):
             
             raw_results.extend(batch_results)
             
-            # İlerleme çubuğunu güncelle
             current_progress = min((i + BATCH_SIZE) / total_files, 1.0)
             progress_bar.progress(current_progress)
             
-            # CANLI TABLO GÜNCELLEME: Müşteri her 5 dökümanda bir tablonun büyüdüğünü görecek
+            # Canlı tablo güncelleme
             valid_batch_data = [r for r in raw_results if "Error" not in r]
             if valid_batch_data:
                 current_df = pd.DataFrame(valid_batch_data)
@@ -190,15 +188,14 @@ if st.button("🚀 Run Extraction Pipeline", type="primary"):
                 current_df = current_df[cols_order]
                 table_placeholder.dataframe(current_df, use_container_width=True)
             
-            # Paketler arası Google Free Tier Kota Koruması (Bloke olmayı önleyen altın kural)
+            # TEST SÜRECİ İÇİN GÜVENLİ KOTA KORUMASI (35 SANİYE BEKLEME)
             if api_mode == "Live Production Mode" and (i + BATCH_SIZE) < total_files:
-                status_text.markdown("⏳ **Google Kota Koruması Devrede:** Sistem hız limiti (Rate Limit) yememek için 10 saniye dinleniyor...")
-                time.sleep(10)
+                status_text.markdown("⏳ **Google Kota Koruması Devrede:** Ücretsiz API hız limiti (Rate Limit) yememek için sistem **35 saniye** dinleniyor...")
+                time.sleep(35)
 
         status_text.success("🎉 Tüm dökümanlar başarıyla eritildi!")
         progress_bar.empty()
 
-        # Filter out errors and map to final DataFrame
         final_data = []
         for r in raw_results:
             if "Error" in r:
@@ -217,10 +214,8 @@ if st.button("🚀 Run Extraction Pipeline", type="primary"):
                 df = df.groupby('Full Name').agg(lambda x: ' / '.join(set(x.astype(str).str.strip()))).reset_index()
                 df = df[cols]
             
-            # Final Tabloyu Sabitle
             table_placeholder.dataframe(df, use_container_width=True)
             
-            # Download Corporate CSV Data Report Document
             @st.cache_data
             def convert_df(df_to_download):
                 return df_to_download.to_csv(index=False).encode('utf-8')
