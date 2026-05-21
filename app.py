@@ -71,9 +71,9 @@ if custom_field:
 # File Uploader Asset
 uploaded_files = st.file_uploader("Click to Add Documents (You can select multiple files)", type=["png", "jpg", "jpeg"], accept_multiple_files=True)
 
-# Görüntü Boyutunu Küçülterek Sistemi Hafifleten Motor
-def optimize_image(file):
-    img = Image.open(file)
+# Görüntü Boyutunu Küçülterek Sistemi Hafifleten Motor (RAM kopyasıyla çalışır)
+def optimize_image(file_bytes):
+    img = Image.open(io.BytesIO(file_bytes))
     if img.mode in ("RGBA", "P"):
         img = img.convert("RGB")
     
@@ -85,28 +85,34 @@ def optimize_image(file):
     img.save(buffer, format="JPEG", quality=85)
     return buffer.getvalue()
 
-# Single File Processing Backend Motor
-def process_file_backend(file, incoming_key, model_name):
+# Single File Processing Backend Motor - Refactored for Thread-Safe Bytes
+def process_file_backend(file_bytes, unique_filename, incoming_key, model_name, target_schema):
     try:
         client = genai.Client(api_key=incoming_key)
-        optimized_bytes = optimize_image(file)
+        
+        # Güvenli byte verisi üzerinden görsel sıkıştırma adımı
+        optimized_bytes = optimize_image(file_bytes)
         base64_data = base64.b64encode(optimized_bytes).decode("utf-8")
         
-        schema_prompt = f"""You are an advanced corporate OCR engine with zero-tolerance for digit hallucination.
-        STEP 1: Identify 'Document Type' (UAE Emirates ID, UAE Labor Card / Work Permit, Security Pass, Passport).
-        STEP 2: Map variables strictly:
-        - Emirates ID -> 'Emirates ID Number (784-xxxx-xxxxxxx-x)' (15 digits)
-        - Labor Card -> 'Work Permit Number (9 Digits)' and 'Personal Number (14 Digits)'
-        - Passport -> 'Passport Number'
-        - Security Pass -> 'Permit / Security Pass / Card Number'
-        - UID/Unified ID -> 'UID / Unified Number'
+        # SÜPER KATI - SIFIR HALÜSİNASYON PROMPT YAPISI
+        schema_prompt = f"""You are an advanced corporate OCR engine with zero-tolerance for data misplacement, digit hallucination, or guessing.
         
-        CRITICAL ABSOLUTE RULES FOR ALL FIELDS AND DOCUMENTS:
+        STEP 1: Identify 'Document Type' (UAE Emirates ID, UAE Labor Card / Work Permit, Security Pass, Passport).
+        
+        STEP 2: Based on the identified document type, extract the parameters under strict rules:
+        - If the document is an Emirates ID, extract the 15-digit number into 'Emirates ID Number (784-xxxx-xxxxxxx-x)' (15 digits)
+        - If the document is a Labor Card / Work Permit, extract the 9-digit Work Permit No into 'Work Permit Number (9 Digits)' and the 14-digit Personal No into 'Personal Number (14 Digits)'
+        - If the document is a Passport, extract the passport serial string into 'Passport Number'
+        - If it is a Site/Security/Access pass, map its badge or permit number into 'Permit / Security Pass / Card Number'
+        - If a 'UID' or 'Unified ID' is visible anywhere on the document, map it to 'UID / Unified Number'
+        
+        CRITICAL ABSOLUTE RULES FOR ALL FIELDS (ZERO HALLUCINATION):
         1. DO NOT guess, alter, interpolate, or hallucinate any digits, letters, or characters.
-        2. Transcribe numbers EXACTLY as they are visually printed on the card.
-        3. If a character is blurry/corrupted, document doubt in 'Remarks for unclear or doubtful fields'. Never invent values.
-        4. Output must populate exactly these keys: {json.dumps(active_schema)}.
-        5. If a field doesn't apply, explicitly set value to "-"."""
+        2. You must transcribe numbers and fields EXACTLY as they are visually printed.
+        3. TRANSLATION RULE: You must translate 'Nationality' and 'Occupation / Trade' fields into official English (e.g., Change 'الهند' to 'India', 'نجار' to 'Carpenter', 'عامل' to 'Laborer').
+        4. IF A FIELD OR DIGIT IS BLURRY, CORRUPTED, OBSCURED, OR UNREADABLE, and you are not 100% confident, DO NOT invent or guess a value. You MUST set that field's value to "Okunamadı / Unreadable" and explain why in 'Remarks for unclear or doubtful fields'.
+        5. Output must populate exactly these keys: {json.dumps(target_schema)}.
+        6. If a field completely does not apply to the document type, set its value to "-"."""
         
         response = client.models.generate_content(
             model=model_name,
@@ -120,35 +126,57 @@ def process_file_backend(file, incoming_key, model_name):
         )
         
         extracted_json = json.loads(response.text.strip())
-        safe_json = {"Source_File_Name": file.name}
-        for col in active_schema:
+        
+        safe_json = {"Source_File_Name": unique_filename}
+        for col in target_schema:
             found_key = next((k for k in extracted_json if k.lower().strip() == col.lower().strip()), None)
             safe_json[col] = extracted_json[found_key] if found_key else "-"
             
         return safe_json
     except Exception as e:
-        return {"Source_File_Name": file.name, "Error": str(e)}
+        return {"Source_File_Name": unique_filename, "Error": str(e)}
 
 # Execution Pipeline Trigger Button
 if st.button("🚀 Run Extraction Pipeline", type="primary"):
     if not uploaded_files:
-        st.error("Please upload at least one document.")
+        st.error("Please upload at least one döküman.")
     elif api_mode == "Live Production Mode" and not gemini_key:
         st.error("Please enter your Gemini API Key for Production Mode.")
     else:
         raw_results = []
         total_files = len(uploaded_files)
         
-        # Canlı durum alanları
         progress_bar = st.progress(0)
         status_text = st.empty()
         table_placeholder = st.empty() 
         
-        # BATCH SIZE: Ücretsiz katman için en ideal paket boyutu
         BATCH_SIZE = 5
         
+        # --- DOSYALARI ÖNCEDEN BELLEĞE ALAN VE BENZERSİZLEŞTİREN GÜVENLİ MOTOR ---
+        name_counts = {}
+        unique_file_tuples = []
+        for f in uploaded_files:
+            orig_name = f.name
+            
+            # Bağlantı kopmasını önlemek için içeriği erkenden RAM'e kopyalıyoruz
+            in_memory_bytes = f.read()
+            
+            if orig_name not in name_counts:
+                name_counts[orig_name] = 1
+                unique_name = orig_name
+            else:
+                name_counts[orig_name] += 1
+                name_parts = orig_name.rsplit('.', 1)
+                if len(name_parts) == 2:
+                    unique_name = f"{name_parts[0]}_{name_counts[orig_name]}.{name_parts[1]}"
+                else:
+                    unique_name = f"{orig_name}_{name_counts[orig_name]}"
+            
+            unique_file_tuples.append((in_memory_bytes, unique_name))
+        
+        # Paketler halinde döngüyü çalıştır
         for i in range(0, total_files, BATCH_SIZE):
-            batch = uploaded_files[i:i+BATCH_SIZE]
+            batch = unique_file_tuples[i:i+BATCH_SIZE]
             status_text.markdown(f"🔄 **Sistem Yükü Dengeleniyor:** {i} / {total_files} döküman tamamlandı. Yeni paket işleniyor...")
             
             batch_results = []
@@ -156,18 +184,18 @@ if st.button("🚀 Run Extraction Pipeline", type="primary"):
             if api_mode == "Live Production Mode":
                 if pipeline_speed == "Parallel (Fast)":
                     with concurrent.futures.ThreadPoolExecutor() as executor:
-                        futures = [executor.submit(process_file_backend, f, gemini_key, TARGET_MODEL) for f in batch]
+                        futures = [executor.submit(process_file_backend, f_bytes, f_name, gemini_key, TARGET_MODEL, active_schema) for f_bytes, f_name in batch]
                         for future in concurrent.futures.as_completed(futures):
                             batch_results.append(future.result())
                 else:
-                    for f in batch:
-                        res = process_file_backend(f, gemini_key, TARGET_MODEL)
+                    for f_bytes, f_name in batch:
+                        res = process_file_backend(f_bytes, f_name, gemini_key, TARGET_MODEL, active_schema)
                         batch_results.append(res)
                         time.sleep(1) 
             else:
-                for f in batch:
+                for f_bytes, f_name in batch:
                     mock_row = {col: "-" for col in active_schema}
-                    mock_row["Source_File_Name"] = f.name
+                    mock_row["Source_File_Name"] = f_name
                     mock_row["Document Type"] = "Simulated ID Card"
                     mock_row["Full Name"] = "ADITYA UPENDRA GANDHI"
                     mock_row["Nationality"] = "India"
@@ -180,7 +208,7 @@ if st.button("🚀 Run Extraction Pipeline", type="primary"):
             current_progress = min((i + BATCH_SIZE) / total_files, 1.0)
             progress_bar.progress(current_progress)
             
-            # Canlı tablo güncelleme
+            # Canlı önizleme tablosu güncellemesi
             valid_batch_data = [r for r in raw_results if "Error" not in r]
             if valid_batch_data:
                 current_df = pd.DataFrame(valid_batch_data)
@@ -188,9 +216,9 @@ if st.button("🚀 Run Extraction Pipeline", type="primary"):
                 current_df = current_df[cols_order]
                 table_placeholder.dataframe(current_df, use_container_width=True)
             
-            # TEST SÜRECİ İÇİN GÜVENLİ KOTA KORUMASI (35 SANİYE BEKLEME)
+            # KOTA KORUMASI BEKLEME SÜRESİ (35 SANİYE - KENDİ TESTLERİN İÇİN)
             if api_mode == "Live Production Mode" and (i + BATCH_SIZE) < total_files:
-                status_text.markdown("⏳ **Google Kota Koruması Devrede:** Ücretsiz API hız limiti (Rate Limit) yememek için sistem **35 saniye** dinleniyor...")
+                status_text.markdown("⏳ **Google Kota Koruması Devrede:** Ücretsiz API hız limiti yememek için sistem **35 saniye** dinleniyor...")
                 time.sleep(35)
 
         status_text.success("🎉 Tüm dökümanlar başarıyla eritildi!")
