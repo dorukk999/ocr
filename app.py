@@ -71,34 +71,28 @@ if custom_field:
 # File Uploader Asset
 uploaded_files = st.file_uploader("Click to Add Documents (You can select multiple files)", type=["png", "jpg", "jpeg"], accept_multiple_files=True)
 
-# Görüntü Boyutunu Küçülterek Sistemi Hafifleten Fonksiyon
+# Görüntü Boyutunu Küçülterek Sistemi Hafifleten Motor
 def optimize_image(file):
     img = Image.open(file)
-    # RGB formatına dönüştür (PNG transparanlık uyuşmazlığını önlemek için)
     if img.mode in ("RGBA", "P"):
         img = img.convert("RGB")
     
-    # Maksimum genişlik/yükseklik sınırı (OCR kalitesini bozmayacak ideal kurumsal boyut)
     max_size = 1600
     if img.width > max_size or img.height > max_size:
         img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
     
-    # Bellek içinde JPEG olarak sıkıştır
     buffer = io.BytesIO()
-    img.save(buffer, format="JPEG", quality=85) # %85 kalite OCR için mükemmeldir ve boyutu 10 kat düşürür
+    img.save(buffer, format="JPEG", quality=85)
     return buffer.getvalue()
 
 # Single File Processing Backend Motor
 def process_file_backend(file, incoming_key, model_name):
     try:
         client = genai.Client(api_key=incoming_key)
-        
-        # Hafifletme Adımı: Orijinal dosyayı sıkıştırıp optimize edilmiş byte alıyoruz
         optimized_bytes = optimize_image(file)
         base64_data = base64.b64encode(optimized_bytes).decode("utf-8")
         
-        # Token Tasarruflu ve Optimize Edilmiş Net Prompt
-        schema_prompt = f"""You are an advanced corporate OCR engine. Zero-tolerance for digit hallucination.
+        schema_prompt = f"""You are an advanced corporate OCR engine with zero-tolerance for digit hallucination.
         STEP 1: Identify 'Document Type' (UAE Emirates ID, UAE Labor Card / Work Permit, Security Pass, Passport).
         STEP 2: Map variables strictly:
         - Emirates ID -> 'Emirates ID Number (784-xxxx-xxxxxxx-x)' (15 digits)
@@ -107,13 +101,13 @@ def process_file_backend(file, incoming_key, model_name):
         - Security Pass -> 'Permit / Security Pass / Card Number'
         - UID/Unified ID -> 'UID / Unified Number'
         
-        CRITICAL RULES:
-        1. Transcribe numbers EXACTLY as printed. DO NOT guess or hallucinate digits.
-        2. If a digit is blurry/unclear, document your doubt in 'Remarks for unclear or doubtful fields'. Never invent values.
-        3. Output must populate exactly these keys: {json.dumps(active_schema)}.
-        4. If a field doesn't apply, explicitly set value to "-"."""
+        CRITICAL ABSOLUTE RULES FOR ALL FIELDS AND DOCUMENTS:
+        1. DO NOT guess, alter, interpolate, or hallucinate any digits, letters, or characters.
+        2. Transcribe numbers EXACTLY as they are visually printed on the card.
+        3. If a character is blurry/corrupted, document doubt in 'Remarks for unclear or doubtful fields'. Never invent values.
+        4. Output must populate exactly these keys: {json.dumps(active_schema)}.
+        5. If a field doesn't apply, explicitly set value to "-"."""
         
-        # Hız için API düzeyinde Doğrudan Saf JSON Modu Aktif Edildi
         response = client.models.generate_content(
             model=model_name,
             contents=[
@@ -125,10 +119,7 @@ def process_file_backend(file, incoming_key, model_name):
             )
         )
         
-        # JSON Modu açık olduğu için replace işlemlerine gerek kalmadan direkt yüklenir
         extracted_json = json.loads(response.text.strip())
-        
-        # Enforce official corporate schema mapping
         safe_json = {"Source_File_Name": file.name}
         for col in active_schema:
             found_key = next((k for k in extracted_json if k.lower().strip() == col.lower().strip()), None)
@@ -146,21 +137,36 @@ if st.button("🚀 Run Extraction Pipeline", type="primary"):
         st.error("Please enter your Gemini API Key for Production Mode.")
     else:
         raw_results = []
+        total_files = len(uploaded_files)
         
-        with st.spinner("Processing documents... Please wait."):
+        # Ekranın donmasını engellemek için canlı durum alanları oluşturuyoruz
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        table_placeholder = st.empty() # Canlı tablo önizleme alanı
+        
+        # BATCH SIZE: Ücretsiz katmanda donmayı önleyecek en ideal paket boyutu (5'er döküman)
+        BATCH_SIZE = 5
+        
+        # Dosyaları paketlere bölüyoruz
+        for i in range(0, total_files, BATCH_SIZE):
+            batch = uploaded_files[i:i+BATCH_SIZE]
+            status_text.markdown(f"🔄 **Sistem Yükü Dengeleniyor:** {i} / {total_files} döküman tamamlandı. Yeni paket işleniyor...")
+            
+            batch_results = []
+            
             if api_mode == "Live Production Mode":
                 if pipeline_speed == "Parallel (Fast)":
                     with concurrent.futures.ThreadPoolExecutor() as executor:
-                        futures = [executor.submit(process_file_backend, f, gemini_key, TARGET_MODEL) for f in uploaded_files]
+                        futures = [executor.submit(process_file_backend, f, gemini_key, TARGET_MODEL) for f in batch]
                         for future in concurrent.futures.as_completed(futures):
-                            raw_results.append(future.result())
+                            batch_results.append(future.result())
                 else:
-                    for f in uploaded_files:
+                    for f in batch:
                         res = process_file_backend(f, gemini_key, TARGET_MODEL)
-                        raw_results.append(res)
-                        time.sleep(4)
+                        batch_results.append(res)
+                        time.sleep(1) # Paket içi hafif bekleme
             else:
-                for f in uploaded_files:
+                for f in batch:
                     mock_row = {col: "-" for col in active_schema}
                     mock_row["Source_File_Name"] = f.name
                     mock_row["Document Type"] = "Simulated ID Card"
@@ -168,13 +174,35 @@ if st.button("🚀 Run Extraction Pipeline", type="primary"):
                     mock_row["Nationality"] = "India"
                     mock_row["Confidence level for each extracted field"] = "High"
                     mock_row["Remarks for unclear or doubtful fields"] = "-"
-                    raw_results.append(mock_row)
+                    batch_results.append(mock_row)
+            
+            raw_results.extend(batch_results)
+            
+            # İlerleme çubuğunu güncelle
+            current_progress = min((i + BATCH_SIZE) / total_files, 1.0)
+            progress_bar.progress(current_progress)
+            
+            # CANLI TABLO GÜNCELLEME: Müşteri her 5 dökümanda bir tablonun büyüdüğünü görecek
+            valid_batch_data = [r for r in raw_results if "Error" not in r]
+            if valid_batch_data:
+                current_df = pd.DataFrame(valid_batch_data)
+                cols_order = ["Source_File_Name"] + [c for c in current_df.columns if c != "Source_File_Name"]
+                current_df = current_df[cols_order]
+                table_placeholder.dataframe(current_df, use_container_width=True)
+            
+            # Paketler arası Google Free Tier Kota Koruması (Bloke olmayı önleyen altın kural)
+            if api_mode == "Live Production Mode" and (i + BATCH_SIZE) < total_files:
+                status_text.markdown("⏳ **Google Kota Koruması Devrede:** Sistem hız limiti (Rate Limit) yememek için 10 saniye dinleniyor...")
+                time.sleep(10)
 
-        # Filter out errors and map to main DataFrame
+        status_text.success("🎉 Tüm dökümanlar başarıyla eritildi!")
+        progress_bar.empty()
+
+        # Filter out errors and map to final DataFrame
         final_data = []
         for r in raw_results:
             if "Error" in r:
-                st.warning(f"⚠️ {r['Source_File_Name']} could not be processed: {r['Error']}")
+                st.warning(f"⚠️ {r['Source_File_Name']} işlenirken hata oluştu: {r['Error']}")
             else:
                 final_data.append(r)
                 
@@ -189,9 +217,8 @@ if st.button("🚀 Run Extraction Pipeline", type="primary"):
                 df = df.groupby('Full Name').agg(lambda x: ' / '.join(set(x.astype(str).str.strip()))).reset_index()
                 df = df[cols]
             
-            # Render Preview Table Data Layer
-            st.success(f"Successfully processed {len(df)} profiles!")
-            st.dataframe(df, use_container_width=True)
+            # Final Tabloyu Sabitle
+            table_placeholder.dataframe(df, use_container_width=True)
             
             # Download Corporate CSV Data Report Document
             @st.cache_data
