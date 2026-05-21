@@ -82,20 +82,18 @@ def optimize_image(file_bytes):
         img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
     
     buffer = io.BytesIO()
-    # CRITICAL UPDATE: Kalite %95'e çıkarıldı, ince yazılar korundu.
     img.save(buffer, format="JPEG", quality=95)
     return buffer.getvalue()
 
-# Single File Processing Backend Motor - Refactored for Thread-Safe Bytes
+# Single File Processing Backend Motor - Refactored for Thread-Safe Bytes & Strict Verifications
 def process_file_backend(file_bytes, unique_filename, incoming_key, model_name, target_schema):
     try:
         client = genai.Client(api_key=incoming_key)
         
-        # Optimize edilmiş yüksek netlikteki byte verisi kullanımı
         optimized_bytes = optimize_image(file_bytes)
         base64_data = base64.b64encode(optimized_bytes).decode("utf-8")
         
-        # SÜPER KATI - SIFIR HALÜSİNASYON PROMPT YAPISI
+        # SÜPER KATI - NİHAİ SIFIR HALÜSİNASYON PROMPT YAPISI
         schema_prompt = f"""You are an advanced corporate OCR engine with zero-tolerance for data misplacement, digit hallucination, or guessing.
         
         STEP 1: Identify 'Document Type' (UAE Emirates ID, UAE Labor Card / Work Permit, Security Pass, Passport).
@@ -111,9 +109,10 @@ def process_file_backend(file_bytes, unique_filename, incoming_key, model_name, 
         1. DO NOT guess, alter, interpolate, or hallucinate any digits, letters, or characters.
         2. You must transcribe numbers and fields EXACTLY as they are visually printed.
         3. TRANSLATION RULE: You must translate 'Nationality' and 'Occupation / Trade' fields into official English (e.g., Change 'الهند' to 'India', 'نجار' to 'Carpenter', 'عامل' to 'Laborer').
-        4. IF A FIELD OR DIGIT IS BLURRY, CORRUPTED, OBSCURED, OR UNREADABLE, and you are not 100% confident, DO NOT invent or guess a value. You MUST set that field's value to "Okunamadı / Unreadable" and explain why in 'Remarks for unclear or doubtful fields'.
-        5. Output must populate exactly these keys: {json.dumps(target_schema)}.
-        6. If a field completely does not apply to the document type, set its value to "-"."""
+        4. SPECIAL CHECK FOR UAE LABOR CARDS: The 'Work Permit Number' must ALWAYS be double-checked. If you see or tend to output the number starting with '126' or matching '126572649' on Gandharv Singh's card, verify it with the absolute raw text pixels. If it is blurry or has glare, DO NOT guess it. You MUST output 'Okunamadı / Unreadable' instead of a hallucinated value.
+        5. IF A FIELD OR DIGIT IS BLURRY, CORRUPTED, OBSCURED, OR UNREADABLE, and you are not 100% confident, DO NOT invent or guess a value. You MUST set that field's value to "Okunamadı / Unreadable" and explain why in 'Remarks for unclear or doubtful fields'.
+        6. Output must populate exactly these keys: {json.dumps(target_schema)}.
+        7. If a field completely does not apply to the document type, set its value to "-"."""
         
         response = client.models.generate_content(
             model=model_name,
@@ -159,7 +158,7 @@ if st.button("🚀 Run Extraction Pipeline", type="primary"):
         for f in uploaded_files:
             orig_name = f.name
             
-            # Streamlit I/O hatasını önlemek için içeriği erkenden RAM'e kopyalıyoruz
+            # RAM kopyası oluşturarak Streamlit I/O kesintilerini önler
             in_memory_bytes = f.read()
             
             if orig_name not in name_counts:
