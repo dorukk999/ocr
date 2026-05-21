@@ -8,14 +8,29 @@ import concurrent.futures
 # Page Configuration
 st.set_page_config(page_title="AI Powered Document Extraction Tool", layout="wide")
 
-# Official Schema Structure
+# Master Corporate Schema - Multi-Document Resilient (Geliştirilmiş Sütun Yapısı)
 OFFICIAL_SCHEMA_ORDER = [
-    "Document Type", "Full Name", "Arabic Name", "Nationality",
-    "Emirates ID / Document Number", "Passport Number", "Date of Birth",
-    "Date of Issue", "Date of Expiry", "Employer / Company Name",
-    "Occupation / Trade", "Site Location", "Arabic Site Location Names",
-    "English Translation of Arabic Site Locations", "Issuing Authority",
-    "Any other visible document-specific fields", "Confidence level for each extracted field",
+    "Document Type", 
+    "Full Name", 
+    "Arabic Name", 
+    "Nationality",
+    "Emirates ID Number (784-xxxx-xxxxxxx-x)", 
+    "Passport Number",
+    "Work Permit Number (9 Digits)", 
+    "Personal Number (14 Digits)",
+    "Permit / Security Pass / Card Number",
+    "UID / Unified Number",
+    "Date of Birth", 
+    "Date of Issue", 
+    "Date of Expiry", 
+    "Employer / Company Name",
+    "Occupation / Trade", 
+    "Site Location", 
+    "Arabic Site Location Names",
+    "English Translation of Arabic Site Locations", 
+    "Issuing Authority",
+    "Any other visible document-specific fields", 
+    "Confidence level for each extracted field",
     "Remarks for unclear or doubtful fields"
 ]
 
@@ -53,7 +68,8 @@ with st.sidebar:
 # Dynamically update the target schema
 active_schema = OFFICIAL_SCHEMA_ORDER.copy()
 if custom_field:
-    active_schema.insert(15, custom_field)
+    # Güvenilirlik kolonlarının hemen öncesine ekle (Düzeni bozmamak için)
+    active_schema.insert(19, custom_field)
 
 # File Uploader Asset
 uploaded_files = st.file_uploader("Click to Add Documents (You can select multiple files)", type=["png", "jpg", "jpeg"], accept_multiple_files=True)
@@ -67,10 +83,22 @@ def process_file_backend(file, key, model_name):
         file_bytes = file.read()
         base64_data = base64.b64encode(file_bytes).decode("utf-8")
         
-        schema_prompt = f"""You are an expert corporate OCR text extraction engine. 
-        Analyze the document image and extract all text parameters precisely. 
+        # Geliştirilmiş İki Aşamalı Akıllı Prompt Yapısı
+        schema_prompt = f"""You are an advanced corporate OCR text extraction engine with zero-tolerance for data misplacement. 
+        Analyze the document image step-by-step:
+        
+        STEP 1: Identify the exact 'Document Type' (e.g., UAE Emirates ID, UAE Labor Card / Work Permit, Security Pass / Access Permit, Passport).
+        
+        STEP 2: Based on the identified document type, extract the parameters under strict rules:
+        - If the document is an Emirates ID, extract the 15-digit number into 'Emirates ID Number (784-xxxx-xxxxxxx-x)'.
+        - If the document is a Labor Card / Work Permit, extract the 9-digit Work Permit No into 'Work Permit Number (9 Digits)' and the 14-digit Personal No into 'Personal Number (14 Digits)'.
+        - If the document is a Passport, extract the passport serial string into 'Passport Number'.
+        - If it is a Site/Security/Access pass, map its badge or permit number into 'Permit / Security Pass / Card Number'.
+        - If a 'UID' or 'Unified ID' is visible anywhere on the document, map it to 'UID / Unified Number'.
+        
         CRITICAL: Return a single flat JSON object where keys EXACTLY match these names (case-sensitive): {json.dumps(active_schema)}. 
-        If any specific field data is missing from the image, explicitly set its value to "-". Do not omit any key."""
+        If a field does not apply to the identified document type or is missing from the image, explicitly set its value to "-". 
+        Do not omit, change, or skip any key. Ensure 'Confidence level for each extracted field' and 'Remarks for unclear or doubtful fields' are ALWAYS populated properly."""
         
         response = client.models.generate_content(
             model=model_name,
@@ -125,6 +153,7 @@ if st.button("🚀 Run Extraction Pipeline", type="primary"):
                     mock_row["Full Name"] = "ADITYA UPENDRA GANDHI"
                     mock_row["Nationality"] = "India"
                     mock_row["Confidence level for each extracted field"] = "High"
+                    mock_row["Remarks for unclear or doubtful fields"] = "-"
                     raw_results.append(mock_row)
 
         # Filter out errors and map to main DataFrame
