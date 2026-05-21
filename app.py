@@ -1,15 +1,18 @@
 import streamlit as st
 import pandas as pd
 from google import genai
+from google.genai import types
 import json
 import base64
 import concurrent.futures
 import time
+from PIL import Image
+import io
 
 # Page Configuration
 st.set_page_config(page_title="AI Powered Document Extraction Tool", layout="wide")
 
-# Master Corporate Schema - Multi-Document Resilient (Geliştirilmiş Kurşun Geçirmez Şema)
+# Master Corporate Schema - Multi-Document Resilient
 OFFICIAL_SCHEMA_ORDER = [
     "Document Type", 
     "Full Name", 
@@ -45,77 +48,85 @@ st.subheader("Official Schema Compliant & Parallel Processing")
 # Sidebar Settings
 with st.sidebar:
     st.header("⚙️ Execution Settings")
-    
     api_mode = st.selectbox("Execution Mode", ["Demo Mode (Simulated AI)", "Live Production Mode"])
-    
-    # Pipeline Speed Setting
     pipeline_speed = st.selectbox("Pipeline Speed", ["Parallel (Fast)", "Sequential (Safe)"])
     
-    # API Key Input
     gemini_key = ""
     if api_mode == "Live Production Mode":
         gemini_key = st.text_input("Gemini API Key", type="password", placeholder="AIzaSy...")
         st.caption("Please enter your Pay-as-you-go API key to remove rate limits.")
 
-    # Custom Field Extraction
     st.write("---")
     st.subheader("➕ Extract Custom Field")
     custom_field = st.text_input("e.g., Sex, Blood Group", key="custom_field_input")
     
-    # Person-Based Consolidation
     st.write("---")
     enable_consolidation = st.checkbox("Enable Person-Based Consolidation")
 
 # Dynamically update the target schema
 active_schema = OFFICIAL_SCHEMA_ORDER.copy()
 if custom_field:
-    # Güvenilirlik sütunlarının hemen önüne ekle
     active_schema.insert(19, custom_field)
 
 # File Uploader Asset
 uploaded_files = st.file_uploader("Click to Add Documents (You can select multiple files)", type=["png", "jpg", "jpeg"], accept_multiple_files=True)
 
+# Görüntü Boyutunu Küçülterek Sistemi Hafifleten Fonksiyon
+def optimize_image(file):
+    img = Image.open(file)
+    # RGB formatına dönüştür (PNG transparanlık uyuşmazlığını önlemek için)
+    if img.mode in ("RGBA", "P"):
+        img = img.convert("RGB")
+    
+    # Maksimum genişlik/yükseklik sınırı (OCR kalitesini bozmayacak ideal kurumsal boyut)
+    max_size = 1600
+    if img.width > max_size or img.height > max_size:
+        img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+    
+    # Bellek içinde JPEG olarak sıkıştır
+    buffer = io.BytesIO()
+    img.save(buffer, format="JPEG", quality=85) # %85 kalite OCR için mükemmeldir ve boyutu 10 kat düşürür
+    return buffer.getvalue()
+
 # Single File Processing Backend Motor
 def process_file_backend(file, incoming_key, model_name):
     try:
-        # Bağlantı parametresi (incoming_key)
         client = genai.Client(api_key=incoming_key)
         
-        # Read file assets and convert to Base64
-        file_bytes = file.read()
-        base64_data = base64.b64encode(file_bytes).decode("utf-8")
+        # Hafifletme Adımı: Orijinal dosyayı sıkıştırıp optimize edilmiş byte alıyoruz
+        optimized_bytes = optimize_image(file)
+        base64_data = base64.b64encode(optimized_bytes).decode("utf-8")
         
-        # Geliştirilmiş Tüm Belgelere Karşı Sıfır Toleranslı Akıllı Prompt Yapısı
-        schema_prompt = f"""You are an advanced corporate OCR text extraction engine with zero-tolerance for data misplacement or digit hallucination. 
-        Analyze the document image step-by-step:
+        # Token Tasarruflu ve Optimize Edilmiş Net Prompt
+        schema_prompt = f"""You are an advanced corporate OCR engine. Zero-tolerance for digit hallucination.
+        STEP 1: Identify 'Document Type' (UAE Emirates ID, UAE Labor Card / Work Permit, Security Pass, Passport).
+        STEP 2: Map variables strictly:
+        - Emirates ID -> 'Emirates ID Number (784-xxxx-xxxxxxx-x)' (15 digits)
+        - Labor Card -> 'Work Permit Number (9 Digits)' and 'Personal Number (14 Digits)'
+        - Passport -> 'Passport Number'
+        - Security Pass -> 'Permit / Security Pass / Card Number'
+        - UID/Unified ID -> 'UID / Unified Number'
         
-        STEP 1: Identify the exact 'Document Type' (e.g., UAE Emirates ID, UAE Labor Card / Work Permit, Security Pass / Access Permit, Passport).
+        CRITICAL RULES:
+        1. Transcribe numbers EXACTLY as printed. DO NOT guess or hallucinate digits.
+        2. If a digit is blurry/unclear, document your doubt in 'Remarks for unclear or doubtful fields'. Never invent values.
+        3. Output must populate exactly these keys: {json.dumps(active_schema)}.
+        4. If a field doesn't apply, explicitly set value to "-"."""
         
-        STEP 2: Based on the identified document type, extract the parameters under strict rules:
-        - If the document is an Emirates ID, extract the 15-digit number into 'Emirates ID Number (784-xxxx-xxxxxxx-x)'.
-        - If the document is a Labor Card / Work Permit, extract the 9-digit Work Permit No into 'Work Permit Number (9 Digits)' and the 14-digit Personal No into 'Personal Number (14 Digits)'.
-        - If the document is a Passport, extract the passport serial string into 'Passport Number'.
-        - If it is a Site/Security/Access pass, map its badge or permit number into 'Permit / Security Pass / Card Number'.
-        - If a 'UID' or 'Unified ID' is visible anywhere on the document, map it to 'UID / Unified Number'.
-        
-        CRITICAL ABSOLUTE RULES FOR ALL FIELDS AND DOCUMENTS:
-        1. DO NOT guess, alter, interpolate, or hallucinate any digits, letters, or characters.
-        2. You must transcribe the numbers EXACTLY as they are visually printed on the card. 
-        3. If a digit or character is blurry or corrupted and you are not 100% certain, extract what you can visually confirm and explicitly document your doubt inside the 'Remarks for unclear or doubtful fields' section. Never invent numbers.
-        4. Return a single flat JSON object where keys EXACTLY match these names (case-sensitive): {json.dumps(active_schema)}. 
-        5. If a field does not apply to the identified document type or is missing from the image, explicitly set its value to "-". Do not omit or skip any key."""
-        
+        # Hız için API düzeyinde Doğrudan Saf JSON Modu Aktif Edildi
         response = client.models.generate_content(
             model=model_name,
             contents=[
                 schema_prompt,
                 {"inline_data": {"data": base64_data, "mime_type": "image/jpeg"}}
-            ]
+            ],
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json"
+            )
         )
         
-        # Clean response string block and parse JSON
-        clean_text = response.text.replace("```json", "").replace("```", "").strip()
-        extracted_json = json.loads(clean_text)
+        # JSON Modu açık olduğu için replace işlemlerine gerek kalmadan direkt yüklenir
+        extracted_json = json.loads(response.text.strip())
         
         # Enforce official corporate schema mapping
         safe_json = {"Source_File_Name": file.name}
@@ -137,7 +148,6 @@ if st.button("🚀 Run Extraction Pipeline", type="primary"):
         raw_results = []
         
         with st.spinner("Processing documents... Please wait."):
-            # --- MODE 1: LIVE PRODUCTION (REAL AI) ---
             if api_mode == "Live Production Mode":
                 if pipeline_speed == "Parallel (Fast)":
                     with concurrent.futures.ThreadPoolExecutor() as executor:
@@ -148,10 +158,7 @@ if st.button("🚀 Run Extraction Pipeline", type="primary"):
                     for f in uploaded_files:
                         res = process_file_backend(f, gemini_key, TARGET_MODEL)
                         raw_results.append(res)
-                        # Ücretsiz katman koruması için sıralı modda 4 saniye otomatik gecikme
                         time.sleep(4)
-            
-            # --- MODE 2: DEMO MODE (SIMULATION LAYER) ---
             else:
                 for f in uploaded_files:
                     mock_row = {col: "-" for col in active_schema}
@@ -173,8 +180,6 @@ if st.button("🚀 Run Extraction Pipeline", type="primary"):
                 
         if final_data:
             df = pd.DataFrame(final_data)
-            
-            # Enforce column sorting (Source_File_Name comes first)
             cols = ["Source_File_Name"] + [c for c in df.columns if c != "Source_File_Name"]
             df = df[cols]
             
