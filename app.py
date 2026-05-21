@@ -4,11 +4,12 @@ from google import genai
 import json
 import base64
 import concurrent.futures
+import time
 
 # Page Configuration
 st.set_page_config(page_title="AI Powered Document Extraction Tool", layout="wide")
 
-# Master Corporate Schema - Multi-Document Resilient (Geliştirilmiş Sütun Yapısı)
+# Master Corporate Schema - Multi-Document Resilient (Geliştirilmiş Kurşun Geçirmez Şema)
 OFFICIAL_SCHEMA_ORDER = [
     "Document Type", 
     "Full Name", 
@@ -68,16 +69,17 @@ with st.sidebar:
 # Dynamically update the target schema
 active_schema = OFFICIAL_SCHEMA_ORDER.copy()
 if custom_field:
-    # Güvenilirlik kolonlarının hemen öncesine ekle (Düzeni bozmamak için)
+    # Güvenilirlik sütunlarının hemen önüne ekle
     active_schema.insert(19, custom_field)
 
 # File Uploader Asset
 uploaded_files = st.file_uploader("Click to Add Documents (You can select multiple files)", type=["png", "jpg", "jpeg"], accept_multiple_files=True)
 
 # Single File Processing Backend Motor
-def process_file_backend(file, key, model_name):
+def process_file_backend(file, incoming_key, model_name):
     try:
-        client = genai.Client(api_key=key)
+        # Bağlantı parametresi düzeltildi (incoming_key)
+        client = genai.Client(api_key=incoming_key)
         
         # Read file assets and convert to Base64
         file_bytes = file.read()
@@ -143,6 +145,8 @@ if st.button("🚀 Run Extraction Pipeline", type="primary"):
                     for f in uploaded_files:
                         res = process_file_backend(f, gemini_key, TARGET_MODEL)
                         raw_results.append(res)
+                        # Ücretsiz katman koruması için sıralı modda 4 saniye otomatik gecikme
+                        time.sleep(4)
             
             # --- MODE 2: DEMO MODE (SIMULATION LAYER) ---
             else:
