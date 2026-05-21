@@ -86,7 +86,8 @@ def process_file_backend(file, incoming_key, model_name):
         base64_data = base64.b64encode(file_bytes).decode("utf-8")
         
         # Geliştirilmiş İki Aşamalı Akıllı Prompt Yapısı
-        schema_prompt = f"""You are an advanced corporate OCR text extraction engine with zero-tolerance for data misplacement. 
+       # Geliştirilmiş Tüm Belgelere Karşı Sıfır Toleranslı Akıllı Prompt Yapısı
+        schema_prompt = f"""You are an advanced corporate OCR text extraction engine with zero-tolerance for data misplacement or digit hallucination. 
         Analyze the document image step-by-step:
         
         STEP 1: Identify the exact 'Document Type' (e.g., UAE Emirates ID, UAE Labor Card / Work Permit, Security Pass / Access Permit, Passport).
@@ -98,9 +99,12 @@ def process_file_backend(file, incoming_key, model_name):
         - If it is a Site/Security/Access pass, map its badge or permit number into 'Permit / Security Pass / Card Number'.
         - If a 'UID' or 'Unified ID' is visible anywhere on the document, map it to 'UID / Unified Number'.
         
-        CRITICAL: Return a single flat JSON object where keys EXACTLY match these names (case-sensitive): {json.dumps(active_schema)}. 
-        If a field does not apply to the identified document type or is missing from the image, explicitly set its value to "-". 
-        Do not omit, change, or skip any key. Ensure 'Confidence level for each extracted field' and 'Remarks for unclear or doubtful fields' are ALWAYS populated properly."""
+        CRITICAL ABSOLUTE RULES FOR ALL FIELDS AND DOCUMENTS:
+        1. DO NOT guess, alter, interpolate, or hallucinate any digits, letters, or characters.
+        2. You must transcribe the numbers EXACTLY as they are visually printed on the card. 
+        3. If a digit or character is blurry or corrupted and you are not 100% certain, extract what you can visually confirm and explicitly document your doubt inside the 'Remarks for unclear or doubtful fields' section. Never invent numbers.
+        4. Return a single flat JSON object where keys EXACTLY match these names (case-sensitive): {json.dumps(active_schema)}. 
+        5. If a field does not apply to the identified document type or is missing from the image, explicitly set its value to "-". Do not omit or skip any key."""opulated properly."""
         
         response = client.models.generate_content(
             model=model_name,
