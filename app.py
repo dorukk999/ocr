@@ -109,16 +109,17 @@ def process_file_backend(file_bytes, unique_filename, incoming_key, model_name, 
         - If UAE Labor Card: Map 'Work Permit No' to 'Work Permit Number (9 Digits)' and 'Personal No' to 'Personal Number (14 Digits)'.
         - If Passport: Map passport serial to 'Passport Number'.
         - If Security Pass: Map badge/permit string to 'Permit / Security Pass / Card Number'.
-        - If UAE Residence Permit / Visa: Map 'ID Number' to 'Emirates ID Number (784-xxxx-xxxxxxx-x)', 'Passport No' to 'Passport Number', and 'File / الملف' to 'UID / Unified Number' or 'Any other visible document-specific fields'.
+        - If UAE Residence Permit / Visa: Map 'ID Number' to 'Emirates ID Number (784-xxxx-xxxxxxx-x)', 'Passport No' to 'Passport Number', and 'File / الملف' to 'UID / Unified Number'.
         
         CRITICAL ABSOLUTE RULES FOR ALL FIELDS (ZERO HALLUCINATION):
         1. DO NOT guess, alter, interpolate, or hallucinate any digits, letters, or characters.
         2. You must transcribe numbers and fields EXACTLY as they are visually printed.
         3. TRANSLATION RULE: You must translate 'Nationality' and 'Occupation / Trade' fields into official English (e.g., Change 'الهند' to 'India', 'نجار' to 'Carpenter', 'عامل' to 'Laborer').
-        4. SPECIAL CHECK FOR UAE LABOR CARDS: The 'Work Permit Number' must ALWAYS be double-checked. If you see or tend to output the number starting with '126' or matching '126572649' on Gandharv Singh's card, verify it with the absolute raw text pixels. If it is blurry or has glare, DO NOT guess it. You MUST output 'Unreadable' instead of a hallucinated value.
-        5. IF A FIELD OR DIGIT IS BLURRY, CORRUPTED, OBSCURED, OR UNREADABLE, and you are not 100% confident, DO NOT invent or guess a value. You MUST set that field's value to "Unreadable" and explain why in 'Remarks for unclear or doubtful fields'.
-        6. Output must populate exactly these keys: {json.dumps(target_schema)}.
-        7. If a field completely does not apply to the document type, set its value to "-"."""
+        4. SPECIAL RULE FOR UAE RESIDENCE/VISA NATIONALITY: On UAE Residence Permit / Visa documents, the Nationality may only be written in Arabic next to or near the term 'الجنسية'. You MUST detect this Arabic text, decode the country name, and translate it into proper official English (e.g., if you see 'الهند', map 'India' to 'Nationality'). Do not output 'Unreadable' for nationality on visas if the Arabic country name is visible.
+        5. SPECIAL CHECK FOR UAE LABOR CARDS: The 'Work Permit Number' must ALWAYS be double-checked. If you see or tend to output the number starting with '126' or matching '126572649' on Gandharv Singh's card, verify it with the absolute raw text pixels. If it is blurry or has glare, DO NOT guess it. You MUST output 'Unreadable' instead of a hallucinated value.
+        6. IF A FIELD OR DIGIT IS BLURRY, CORRUPTED, OBSCURED, OR UNREADABLE, and you are not 100% confident, DO NOT invent or guess a value. You MUST set that field's value to "Unreadable" and explain why in 'Remarks for unclear or doubtful fields'.
+        7. Output must populate exactly these keys: {json.dumps(target_schema)}.
+        8. If a field completely does not apply to the document type, set its value to "-"."""
         
         response = client.models.generate_content(
             model=model_name,
