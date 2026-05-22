@@ -12,6 +12,10 @@ import io
 # Page Configuration
 st.set_page_config(page_title="AI Powered Document Extraction Tool", layout="wide")
 
+# Initialize Session State for File Uploader Key to enable global clear
+if "uploader_key" not in st.session_state:
+    st.session_state["uploader_key"] = 0
+
 # Master Corporate Schema - FIXED ORDER RESILIENT (Do not modify order)
 OFFICIAL_SCHEMA_ORDER = [
     "Document Type", 
@@ -68,8 +72,24 @@ active_schema = OFFICIAL_SCHEMA_ORDER.copy()
 if custom_field:
     active_schema.insert(19, custom_field)
 
-# File Uploader Asset (Accepts Images and PDFs)
-uploaded_files = st.file_uploader("Click to Add Documents (You can select multiple files)", type=["png", "jpg", "jpeg", "pdf"], accept_multiple_files=True)
+# --- FILE UPLOADER & BULK DELETE AREA ---
+# Create a layout with columns for a clean look
+col_upload, col_clear = st.columns([6, 1])
+
+with col_upload:
+    uploaded_files = st.file_uploader(
+        "Click to Add Documents (You can select multiple files)", 
+        type=["png", "jpg", "jpeg", "pdf"], 
+        accept_multiple_files=True,
+        key=f"uploader_{st.session_state['uploader_key']}" # Dynamic key to force reset on clear
+    )
+
+with col_clear:
+    st.write(" ") # Padding to align with uploader label
+    st.write(" ") 
+    if st.button("🗑️ Clear All", type="secondary", use_container_width=True):
+        st.session_state["uploader_key"] += 1 # Changes the key, forcing the file uploader to completely reset
+        st.rerun()
 
 # Image Optimization Engine
 def optimize_image(file_bytes):
