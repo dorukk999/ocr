@@ -12,7 +12,7 @@ import io
 # Page Configuration
 st.set_page_config(page_title="AI Powered Document Extraction Tool", layout="wide")
 
-# Master Corporate Schema - Multi-Document Resilient
+# Master Corporate Schema - FIXED ORDER RESILIENT (Do not modify order)
 OFFICIAL_SCHEMA_ORDER = [
     "Document Type", 
     "Full Name", 
@@ -41,11 +41,11 @@ OFFICIAL_SCHEMA_ORDER = [
 # Locked specifically onto Gemini 2.5 Flash
 TARGET_MODEL = "models/gemini-2.5-flash"
 
-# Main UI Headers - Fully in English
+# Main UI Headers
 st.title("📂 AI-Powered Document Data Extraction Tool")
 st.subheader("Official Schema Compliant & Parallel Processing")
 
-# Sidebar Settings - Fully in English
+# Sidebar Settings
 with st.sidebar:
     st.header("⚙️ Execution Settings")
     api_mode = st.selectbox("Execution Mode", ["Demo Mode (Simulated AI)", "Live Production Mode"])
@@ -68,7 +68,7 @@ active_schema = OFFICIAL_SCHEMA_ORDER.copy()
 if custom_field:
     active_schema.insert(19, custom_field)
 
-# File Uploader Asset
+# File Uploader Asset (Accepts Images and PDFs)
 uploaded_files = st.file_uploader("Click to Add Documents (You can select multiple files)", type=["png", "jpg", "jpeg", "pdf"], accept_multiple_files=True)
 
 # Image Optimization Engine
@@ -85,7 +85,7 @@ def optimize_image(file_bytes):
     img.save(buffer, format="JPEG", quality=95)
     return buffer.getvalue()
 
-# Single File Processing Backend Motor - Fully Standardized to English Responses
+# Single File Processing Backend Motor
 def process_file_backend(file_bytes, unique_filename, incoming_key, model_name, target_schema):
     try:
         client = genai.Client(api_key=incoming_key)
@@ -99,17 +99,17 @@ def process_file_backend(file_bytes, unique_filename, incoming_key, model_name, 
             base64_data = base64.b64encode(optimized_bytes).decode("utf-8")
             mime_type = "image/jpeg"
         
-        # STRICT ZERO-HALLUCINATION PROMPT (ENGLISH OUTPUT ENFORCED)
+        # STRICT ZERO-HALLUCINATION & MULTI-DOCUMENT PROMPT
         schema_prompt = f"""You are an advanced corporate OCR engine with zero-tolerance for data misplacement, digit hallucination, or guessing.
         
-        STEP 1: Identify 'Document Type' (UAE Emirates ID, UAE Labor Card / Work Permit, Security Pass, Passport).
+        STEP 1: Identify 'Document Type' (UAE Emirates ID, UAE Labor Card / Work Permit, Security Pass, Passport, UAE Residence Permit / Visa).
         
-        STEP 2: Based on the identified document type, extract the parameters under strict rules:
-        - If the document is an Emirates ID, extract the 15-digit number into 'Emirates ID Number (784-xxxx-xxxxxxx-x)' (15 digits)
-        - If the document is a Labor Card / Work Permit, extract the 9-digit Work Permit No into 'Work Permit Number (9 Digits)' and the 14-digit Personal No into 'Personal Number (14 Digits)'
-        - If the document is a Passport, extract the passport serial string into 'Passport Number'
-        - If it is a Site/Security/Access pass, map its badge or permit number into 'Permit / Security Pass / Card Number'
-        - If a 'UID' or 'Unified ID' is visible anywhere on the document, map it to 'UID / Unified Number'
+        STEP 2: Map the variables strictly based on the identified document type into the requested keys:
+        - If UAE Emirates ID: Map the 15-digit number to 'Emirates ID Number (784-xxxx-xxxxxxx-x)'.
+        - If UAE Labor Card: Map 'Work Permit No' to 'Work Permit Number (9 Digits)' and 'Personal No' to 'Personal Number (14 Digits)'.
+        - If Passport: Map passport serial to 'Passport Number'.
+        - If Security Pass: Map badge/permit string to 'Permit / Security Pass / Card Number'.
+        - If UAE Residence Permit / Visa: Map 'ID Number' to 'Emirates ID Number (784-xxxx-xxxxxxx-x)', 'Passport No' to 'Passport Number', and 'File / الملف' to 'UID / Unified Number' or 'Any other visible document-specific fields'.
         
         CRITICAL ABSOLUTE RULES FOR ALL FIELDS (ZERO HALLUCINATION):
         1. DO NOT guess, alter, interpolate, or hallucinate any digits, letters, or characters.
@@ -200,8 +200,8 @@ if st.button("🚀 Run Extraction Pipeline", type="primary"):
                 for f_bytes, f_name in batch:
                     mock_row = {col: "-" for col in active_schema}
                     mock_row["Source_File_Name"] = f_name
-                    mock_row["Document Type"] = "Simulated ID Card"
-                    mock_row["Full Name"] = "ADITYA UPENDRA GANDHI"
+                    mock_row["Document Type"] = "Simulated Residence Visa"
+                    mock_row["Full Name"] = "PIYUSH SHUKLA RAMGOPAL SHUKLA"
                     mock_row["Nationality"] = "India"
                     mock_row["Confidence level for each extracted field"] = "High"
                     mock_row["Remarks for unclear or doubtful fields"] = "-"
@@ -220,7 +220,7 @@ if st.button("🚀 Run Extraction Pipeline", type="primary"):
                 current_df = current_df[cols_order]
                 table_placeholder.dataframe(current_df, use_container_width=True)
             
-            # RATE LIMIT PROTECTION - LOCK-ON SPECIFICALLY TO 10 SECONDS
+            # RATE LIMIT PROTECTION - 10 SECONDS BETWEEN BATCHES
             if api_mode == "Live Production Mode" and (i + BATCH_SIZE) < total_files:
                 status_text.markdown("⏳ **Rate Limit Protection Active:** Sleeping for **10 seconds** to comply with API quotas...")
                 time.sleep(10)
