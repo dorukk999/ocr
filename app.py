@@ -41,11 +41,11 @@ OFFICIAL_SCHEMA_ORDER = [
 # Locked specifically onto Gemini 2.5 Flash
 TARGET_MODEL = "models/gemini-2.5-flash"
 
-# Main UI Headers
+# Main UI Headers - Fully in English
 st.title("📂 AI-Powered Document Data Extraction Tool")
 st.subheader("Official Schema Compliant & Parallel Processing")
 
-# Sidebar Settings
+# Sidebar Settings - Fully in English
 with st.sidebar:
     st.header("⚙️ Execution Settings")
     api_mode = st.selectbox("Execution Mode", ["Demo Mode (Simulated AI)", "Live Production Mode"])
@@ -69,9 +69,9 @@ if custom_field:
     active_schema.insert(19, custom_field)
 
 # File Uploader Asset
-uploaded_files = st.file_uploader("Click to Add Documents (You can select multiple files)", type=["png", "jpg", "jpeg"], accept_multiple_files=True)
+uploaded_files = st.file_uploader("Click to Add Documents (You can select multiple files)", type=["png", "jpg", "jpeg", "pdf"], accept_multiple_files=True)
 
-# Görüntü Boyutunu ve Kalitesini Optimize Eden Motor (Rakam güvenliği için %95 netlik)
+# Image Optimization Engine
 def optimize_image(file_bytes):
     img = Image.open(io.BytesIO(file_bytes))
     if img.mode in ("RGBA", "P"):
@@ -85,15 +85,21 @@ def optimize_image(file_bytes):
     img.save(buffer, format="JPEG", quality=95)
     return buffer.getvalue()
 
-# Single File Processing Backend Motor - Refactored for Thread-Safe Bytes & Strict Verifications
+# Single File Processing Backend Motor - Fully Standardized to English Responses
 def process_file_backend(file_bytes, unique_filename, incoming_key, model_name, target_schema):
     try:
         client = genai.Client(api_key=incoming_key)
+        is_pdf = unique_filename.lower().endswith('.pdf')
         
-        optimized_bytes = optimize_image(file_bytes)
-        base64_data = base64.b64encode(optimized_bytes).decode("utf-8")
+        if is_pdf:
+            base64_data = base64.b64encode(file_bytes).decode("utf-8")
+            mime_type = "application/pdf"
+        else:
+            optimized_bytes = optimize_image(file_bytes)
+            base64_data = base64.b64encode(optimized_bytes).decode("utf-8")
+            mime_type = "image/jpeg"
         
-        # SÜPER KATI - NİHAİ SIFIR HALÜSİNASYON PROMPT YAPISI
+        # STRICT ZERO-HALLUCINATION PROMPT (ENGLISH OUTPUT ENFORCED)
         schema_prompt = f"""You are an advanced corporate OCR engine with zero-tolerance for data misplacement, digit hallucination, or guessing.
         
         STEP 1: Identify 'Document Type' (UAE Emirates ID, UAE Labor Card / Work Permit, Security Pass, Passport).
@@ -109,8 +115,8 @@ def process_file_backend(file_bytes, unique_filename, incoming_key, model_name, 
         1. DO NOT guess, alter, interpolate, or hallucinate any digits, letters, or characters.
         2. You must transcribe numbers and fields EXACTLY as they are visually printed.
         3. TRANSLATION RULE: You must translate 'Nationality' and 'Occupation / Trade' fields into official English (e.g., Change 'الهند' to 'India', 'نجار' to 'Carpenter', 'عامل' to 'Laborer').
-        4. SPECIAL CHECK FOR UAE LABOR CARDS: The 'Work Permit Number' must ALWAYS be double-checked. If you see or tend to output the number starting with '126' or matching '126572649' on Gandharv Singh's card, verify it with the absolute raw text pixels. If it is blurry or has glare, DO NOT guess it. You MUST output 'Okunamadı / Unreadable' instead of a hallucinated value.
-        5. IF A FIELD OR DIGIT IS BLURRY, CORRUPTED, OBSCURED, OR UNREADABLE, and you are not 100% confident, DO NOT invent or guess a value. You MUST set that field's value to "Okunamadı / Unreadable" and explain why in 'Remarks for unclear or doubtful fields'.
+        4. SPECIAL CHECK FOR UAE LABOR CARDS: The 'Work Permit Number' must ALWAYS be double-checked. If you see or tend to output the number starting with '126' or matching '126572649' on Gandharv Singh's card, verify it with the absolute raw text pixels. If it is blurry or has glare, DO NOT guess it. You MUST output 'Unreadable' instead of a hallucinated value.
+        5. IF A FIELD OR DIGIT IS BLURRY, CORRUPTED, OBSCURED, OR UNREADABLE, and you are not 100% confident, DO NOT invent or guess a value. You MUST set that field's value to "Unreadable" and explain why in 'Remarks for unclear or doubtful fields'.
         6. Output must populate exactly these keys: {json.dumps(target_schema)}.
         7. If a field completely does not apply to the document type, set its value to "-"."""
         
@@ -118,7 +124,7 @@ def process_file_backend(file_bytes, unique_filename, incoming_key, model_name, 
             model=model_name,
             contents=[
                 schema_prompt,
-                {"inline_data": {"data": base64_data, "mime_type": "image/jpeg"}}
+                {"inline_data": {"data": base64_data, "mime_type": mime_type}}
             ],
             config=types.GenerateContentConfig(
                 response_mime_type="application/json"
@@ -139,7 +145,7 @@ def process_file_backend(file_bytes, unique_filename, incoming_key, model_name, 
 # Execution Pipeline Trigger Button
 if st.button("🚀 Run Extraction Pipeline", type="primary"):
     if not uploaded_files:
-        st.error("Please upload at least one döküman.")
+        st.error("Please upload at least one document.")
     elif api_mode == "Live Production Mode" and not gemini_key:
         st.error("Please enter your Gemini API Key for Production Mode.")
     else:
@@ -152,13 +158,11 @@ if st.button("🚀 Run Extraction Pipeline", type="primary"):
         
         BATCH_SIZE = 5
         
-        # --- DOSYALARI ÖNCEDEN BELLEĞE ALAN VE BENZERSİZLEŞTİREN GÜVENLİ MOTOR ---
+        # Thread-Safe In-Memory Document Structuring
         name_counts = {}
         unique_file_tuples = []
         for f in uploaded_files:
             orig_name = f.name
-            
-            # RAM kopyası oluşturarak Streamlit I/O kesintilerini önler
             in_memory_bytes = f.read()
             
             if orig_name not in name_counts:
@@ -174,10 +178,10 @@ if st.button("🚀 Run Extraction Pipeline", type="primary"):
             
             unique_file_tuples.append((in_memory_bytes, unique_name))
         
-        # Paketler halinde döngüyü çalıştır
+        # Batch Execution Loop
         for i in range(0, total_files, BATCH_SIZE):
             batch = unique_file_tuples[i:i+BATCH_SIZE]
-            status_text.markdown(f"🔄 **Sistem Yükü Dengeleniyor:** {i} / {total_files} döküman tamamlandı. Yeni paket işleniyor...")
+            status_text.markdown(f"🔄 **Balancing System Load:** {i} / {total_files} documents processed. Processing next batch...")
             
             batch_results = []
             
@@ -208,7 +212,7 @@ if st.button("🚀 Run Extraction Pipeline", type="primary"):
             current_progress = min((i + BATCH_SIZE) / total_files, 1.0)
             progress_bar.progress(current_progress)
             
-            # Canlı önizleme tablosu güncellemesi
+            # Live Preview Table Rendering
             valid_batch_data = [r for r in raw_results if "Error" not in r]
             if valid_batch_data:
                 current_df = pd.DataFrame(valid_batch_data)
@@ -216,18 +220,18 @@ if st.button("🚀 Run Extraction Pipeline", type="primary"):
                 current_df = current_df[cols_order]
                 table_placeholder.dataframe(current_df, use_container_width=True)
             
-            # KOTA KORUMASI BEKLEME SÜRESİ (Ücretsiz katman testlerin için 35 saniye)
+            # RATE LIMIT PROTECTION - LOCK-ON SPECIFICALLY TO 10 SECONDS
             if api_mode == "Live Production Mode" and (i + BATCH_SIZE) < total_files:
-                status_text.markdown("⏳ **Google Kota Koruması Devrede:** Ücretsiz API hız limiti yememek için sistem **35 saniye** dinleniyor...")
-                time.sleep(35)
+                status_text.markdown("⏳ **Rate Limit Protection Active:** Sleeping for **10 seconds** to comply with API quotas...")
+                time.sleep(10)
 
-        status_text.success("🎉 Tüm dökümanlar başarıyla eritildi!")
+        status_text.success("🎉 All documents successfully processed!")
         progress_bar.empty()
 
         final_data = []
         for r in raw_results:
             if "Error" in r:
-                st.warning(f"⚠️ {r['Source_File_Name']} işlenirken hata oluştu: {r['Error']}")
+                st.warning(f"⚠️ {r['Source_File_Name']} could not be processed: {r['Error']}")
             else:
                 final_data.append(r)
                 
