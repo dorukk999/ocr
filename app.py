@@ -73,7 +73,6 @@ if custom_field:
     active_schema.insert(19, custom_field)
 
 # --- FILE UPLOADER & BULK DELETE AREA ---
-# Create a layout with columns for a clean look
 col_upload, col_clear = st.columns([6, 1])
 
 with col_upload:
@@ -81,14 +80,14 @@ with col_upload:
         "Click to Add Documents (You can select multiple files)", 
         type=["png", "jpg", "jpeg", "pdf"], 
         accept_multiple_files=True,
-        key=f"uploader_{st.session_state['uploader_key']}" # Dynamic key to force reset on clear
+        key=f"uploader_{st.session_state['uploader_key']}"
     )
 
 with col_clear:
-    st.write(" ") # Padding to align with uploader label
+    st.write(" ") 
     st.write(" ") 
     if st.button("🗑️ Clear All", type="secondary", use_container_width=True):
-        st.session_state["uploader_key"] += 1 # Changes the key, forcing the file uploader to completely reset
+        st.session_state["uploader_key"] += 1 
         st.rerun()
 
 # Image Optimization Engine
@@ -105,7 +104,7 @@ def optimize_image(file_bytes):
     img.save(buffer, format="JPEG", quality=95)
     return buffer.getvalue()
 
-# Single File Processing Backend Motor
+# Single File Processing Backend Motor - Refactored to catch and embed rate-limit errors in Excel
 def process_file_backend(file_bytes, unique_filename, incoming_key, model_name, target_schema):
     try:
         client = genai.Client(api_key=incoming_key)
@@ -161,7 +160,15 @@ def process_file_backend(file_bytes, unique_filename, incoming_key, model_name, 
             
         return safe_json
     except Exception as e:
-        return {"Source_File_Name": unique_filename, "Error": str(e)}
+        # CRITICAL UPDATE: Hatalar artık dışlanmıyor, tüm kurumsal şema yapısıyla Excel satırı olarak hazırlanıyor
+        error_msg = str(e)
+        status_label = "FAILED / RATE LIMIT EXCEEDED" if "resource" in error_msg.lower() or "limit" in error_msg.lower() else f"FAILED / ERROR"
+        
+        fail_row = {col: "-" for col in target_schema}
+        fail_row["Source_File_Name"] = unique_filename
+        fail_row["Document Type"] = status_label
+        fail_row["Remarks for unclear or doubtful fields"] = f"Technical Details: {error_msg}"
+        return fail_row
 
 # Execution Pipeline Trigger Button
 if st.button("🚀 Run Extraction Pipeline", type="primary"):
@@ -233,10 +240,9 @@ if st.button("🚀 Run Extraction Pipeline", type="primary"):
             current_progress = min((i + BATCH_SIZE) / total_files, 1.0)
             progress_bar.progress(current_progress)
             
-            # Live Preview Table Rendering
-            valid_batch_data = [r for r in raw_results if "Error" not in r]
-            if valid_batch_data:
-                current_df = pd.DataFrame(valid_batch_data)
+            # Live Preview Table Rendering (Shows failures immediately)
+            if raw_results:
+                current_df = pd.DataFrame(raw_results)
                 cols_order = ["Source_File_Name"] + [c for c in current_df.columns if c != "Source_File_Name"]
                 current_df = current_df[cols_order]
                 table_placeholder.dataframe(current_df, use_container_width=True)
@@ -246,20 +252,19 @@ if st.button("🚀 Run Extraction Pipeline", type="primary"):
                 status_text.markdown("⏳ **Rate Limit Protection Active:** Sleeping for **10 seconds** to comply with API quotas...")
                 time.sleep(10)
 
-        status_text.success("🎉 All documents successfully processed!")
+        status_text.success("🎉 All documents processed!")
         progress_bar.empty()
 
-        final_data = []
-        for r in raw_results:
-            if "Error" in r:
-                st.warning(f"⚠️ {r['Source_File_Name']} could not be processed: {r['Error']}")
-            else:
-                final_data.append(r)
-                
-        if final_data:
-            df = pd.DataFrame(final_data)
+        # Build final report including both successes and structural failure rows
+        if raw_results:
+            df = pd.DataFrame(raw_results)
             cols = ["Source_File_Name"] + [c for c in df.columns if c != "Source_File_Name"]
             df = df[cols]
+            
+            # Visual warnings on screen for files that triggered the exception block
+            for r in raw_results:
+                if "FAILED" in str(r.get("Document Type", "")):
+                    st.warning(f"⚠️ {r['Source_File_Name']} could not be parsed by the AI. Marked in the report spreadsheet.")
             
             # --- PERSON-BASED CONSOLIDATION ENGINE ---
             if enable_consolidation and "Full Name" in df.columns:
