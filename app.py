@@ -90,13 +90,14 @@ with col_clear:
         st.session_state["uploader_key"] += 1 
         st.rerun()
 
-# Image Optimization Engine
+# Image Optimization Engine - CRITICAL UPDATE: Increased max_size to 2400 for high-res layout analysis
 def optimize_image(file_bytes):
     img = Image.open(io.BytesIO(file_bytes))
     if img.mode in ("RGBA", "P"):
         img = img.convert("RGB")
     
-    max_size = 1600
+    # Increased to 2400 to prevent blurring of tiny Arabic fonts on full A4 Visa pages
+    max_size = 2400 
     if img.width > max_size or img.height > max_size:
         img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
     
@@ -118,7 +119,7 @@ def process_file_backend(file_bytes, unique_filename, incoming_key, model_name, 
             base64_data = base64.b64encode(optimized_bytes).decode("utf-8")
             mime_type = "image/jpeg"
         
-        # STRICT ZERO-HALLUCINATION & MULTI-DOCUMENT PROMPT
+        # STRICT ZERO-HALLUCINATION & MULTI-DOCUMENT PROMPT (WITH ADVANCED VISA LOGIC)
         schema_prompt = f"""You are an advanced corporate OCR engine with zero-tolerance for data misplacement, digit hallucination, or guessing.
         
         STEP 1: Identify 'Document Type' (UAE Emirates ID, UAE Labor Card / Work Permit, Security Pass, Passport, UAE Residence Permit / Visa).
@@ -134,7 +135,7 @@ def process_file_backend(file_bytes, unique_filename, incoming_key, model_name, 
         1. DO NOT guess, alter, interpolate, or hallucinate any digits, letters, or characters.
         2. You must transcribe numbers and fields EXACTLY as they are visually printed.
         3. TRANSLATION RULE: You must translate 'Nationality' and 'Occupation / Trade' fields into official English (e.g., Change 'الهند' to 'India', 'نجار' to 'Carpenter', 'عامل' to 'Laborer').
-        4. SPECIAL RULE FOR UAE RESIDENCE/VISA NATIONALITY: On UAE Residence Permit / Visa documents, the Nationality may only be written in Arabic next to or near the term 'الجنسية'. You MUST detect this Arabic text, decode the country name, and translate it into proper official English (e.g., if you see 'الهند', map 'India' to 'Nationality'). Do not output 'Unreadable' for nationality on visas if the Arabic country name is visible.
+        4. SPECIAL RULE FOR UAE RESIDENCE/VISA NATIONALITY & ARABIC NAME: On UAE Residence Permit / Visa documents, the 'Arabic Name' is printed directly below the English Name string—look closely at the pixels and do not skip it. The 'Nationality' is written strictly in Arabic near or below the 'Expiry Date' box, often next to the keyword 'الجنسية'. You MUST locate this Arabic country word (e.g., 'الهند', 'باكستان'), decode it, translate it to its proper official English value (e.g., 'India', 'Pakistan'), and assign it to the 'Nationality' field. Do not leave it blank or '-' if visible.
         5. SPECIAL CHECK FOR UAE LABOR CARDS: The 'Work Permit Number' must ALWAYS be double-checked. If you see or tend to output the number starting with '126' or matching '126572649' on Gandharv Singh's card, verify it with the absolute raw text pixels. If it is blurry or has glare, DO NOT guess it. You MUST output 'Unreadable' instead of a hallucinated value.
         6. IF A FIELD OR DIGIT IS BLURRY, CORRUPTED, OBSCURED, OR UNREADABLE, and you are not 100% confident, DO NOT invent or guess a value. You MUST set that field's value to "Unreadable" and explain why in 'Remarks for unclear or doubtful fields'.
         7. Output must populate exactly these keys: {json.dumps(target_schema)}.
@@ -255,7 +256,6 @@ if st.button("🚀 Run Extraction Pipeline", type="primary"):
             cols = ["Source_File_Name"] + [c for c in df.columns if c != "Source_File_Name"]
             df = df[cols]
             
-            # Visual warnings on screen for files that triggered the exception block
             for r in raw_results:
                 if "FAILED" in str(r.get("Document Type", "")):
                     st.warning(f"⚠️ {r['Source_File_Name']} could not be parsed by the AI. Marked in the report spreadsheet.")
