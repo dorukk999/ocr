@@ -90,18 +90,19 @@ with col_clear:
         st.session_state["uploader_key"] += 1 
         st.rerun()
 
-# Image Optimization Engine - High-Res Layout Preserved
+# Image Optimization Engine - Enhanced for High-Contrast Text Recognition
 def optimize_image(file_bytes):
     img = Image.open(io.BytesIO(file_bytes))
     if img.mode in ("RGBA", "P"):
         img = img.convert("RGB")
     
+    # Locked at 2400 max pixel dimension to maintain clear text edges for background lines
     max_size = 2400 
     if img.width > max_size or img.height > max_size:
         img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
     
     buffer = io.BytesIO()
-    img.save(buffer, format="JPEG", quality=95)
+    img.save(buffer, format="JPEG", quality=98) # Maximized quality to avoid compression artifacts in background fonts
     return buffer.getvalue()
 
 # Single File Processing Backend Motor
@@ -118,7 +119,7 @@ def process_file_backend(file_bytes, unique_filename, incoming_key, model_name, 
             base64_data = base64.b64encode(optimized_bytes).decode("utf-8")
             mime_type = "image/jpeg"
         
-        # STRICT ZERO-HALLUCINATION & MULTI-DOCUMENT PROMPT (WITH ADVANCED ENTRY/RESIDENCE VISA LOGIC)
+        # STRICT ZERO-HALLUCINATION PROMPT WITH EXPLICIT VISA ANCHOR-MAPPING
         schema_prompt = f"""You are an advanced corporate OCR engine with zero-tolerance for data misplacement, digit hallucination, or guessing.
         
         STEP 1: Identify 'Document Type' (UAE Emirates ID, UAE Labor Card / Work Permit, Security Pass, Passport, UAE Residence Permit / Visa).
@@ -134,7 +135,7 @@ def process_file_backend(file_bytes, unique_filename, incoming_key, model_name, 
         1. DO NOT guess, alter, interpolate, or hallucinate any digits, letters, or characters.
         2. You must transcribe numbers and fields EXACTLY as they are visually printed.
         3. TRANSLATION RULE: You must translate 'Nationality' and 'Occupation / Trade' fields into official English (e.g., Change 'الهند' to 'India', 'نجار' to 'Carpenter', 'عامل' to 'Laborer').
-        4. SPECIAL INTENSE RULE FOR UAE RESIDENCE/VISA NATIONALITY & ARABIC NAME: On UAE Residence Permit / Visa documents, look closely at the text strings at the bottom of the page, below the Expiry Date. The nationality country is written in Arabic but it is often concatenated or slightly typo-ridden inside lines like 'الجنسية الهندا' or 'والجنسية الهندا'. You MUST perform substring and sub-word checking: if you find 'الهند' or 'الهندا' anywhere in that bottom area text blocks, the Nationality is strictly 'India'. If you find 'باكستان', the Nationality is strictly 'Pakistan'. Translate this successfully and output it to the 'Nationality' field. Do not output '-' or 'Unreadable' for nationality if these character blocks are present.
+        4. UAE RESIDENCE/VISA NATIONALITY ABSOLUTE OVERRIDE: On UAE Residence Permit / Visa documents, the nationality is printed in Arabic at the bottom section of the page, directly below the Expiry Date box and right above the signature area. Due to document layout, it is often printed inside a background string or slightly distorted as 'الهندا', 'الهند', or 'والجنسية الهندا'. You are STRICTLY COMMANDED to scan the entire lower half of the document text. If you find the character block 'الهند' or 'الهندا' anywhere in that bottom area, you MUST explicitly output 'India' into the 'Nationality' field. If you find 'باكستان', you MUST output 'Pakistan' into the 'Nationality' field. This is an absolute instruction—do not return '-' or 'Unreadable' if these country blocks are detected at the bottom.
         5. SPECIAL CHECK FOR UAE LABOR CARDS: The 'Work Permit Number' must ALWAYS be double-checked. If you see or tend to output the number starting with '126' or matching '126572649' on Gandharv Singh's card, verify it with the absolute raw text pixels. If it is blurry or has glare, DO NOT guess it. You MUST output 'Unreadable' instead of a hallucinated value.
         6. IF A FIELD OR DIGIT IS BLURRY, CORRUPTED, OBSCURED, OR UNREADABLE, and you are not 100% confident, DO NOT invent or guess a value. You MUST set that field's value to "Unreadable" and explain why in 'Remarks for unclear or doubtful fields'.
         7. Output must populate exactly these keys: {json.dumps(target_schema)}.
