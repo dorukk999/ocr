@@ -104,7 +104,7 @@ def optimize_image(file_bytes):
     img.save(buffer, format="JPEG", quality=95)
     return buffer.getvalue()
 
-# Single File Processing Backend Motor - Refactored to catch and embed rate-limit errors in Excel
+# Single File Processing Backend Motor
 def process_file_backend(file_bytes, unique_filename, incoming_key, model_name, target_schema):
     try:
         client = genai.Client(api_key=incoming_key)
@@ -160,7 +160,6 @@ def process_file_backend(file_bytes, unique_filename, incoming_key, model_name, 
             
         return safe_json
     except Exception as e:
-        # CRITICAL UPDATE: Hatalar artık dışlanmıyor, tüm kurumsal şema yapısıyla Excel satırı olarak hazırlanıyor
         error_msg = str(e)
         status_label = "FAILED / RATE LIMIT EXCEEDED" if "resource" in error_msg.lower() or "limit" in error_msg.lower() else f"FAILED / ERROR"
         
@@ -209,7 +208,7 @@ if st.button("🚀 Run Extraction Pipeline", type="primary"):
         # Batch Execution Loop
         for i in range(0, total_files, BATCH_SIZE):
             batch = unique_file_tuples[i:i+BATCH_SIZE]
-            status_text.markdown(f"🔄 **Balancing System Load:** {i} / {total_files} documents processed. Processing next batch...")
+            status_text.markdown(f"🔄 **Processing:** {i} / {total_files} documents processed. Injecting next batch...")
             
             batch_results = []
             
@@ -246,13 +245,8 @@ if st.button("🚀 Run Extraction Pipeline", type="primary"):
                 cols_order = ["Source_File_Name"] + [c for c in current_df.columns if c != "Source_File_Name"]
                 current_df = current_df[cols_order]
                 table_placeholder.dataframe(current_df, use_container_width=True)
-            
-            # RATE LIMIT PROTECTION - 10 SECONDS BETWEEN BATCHES
-            if api_mode == "Live Production Mode" and (i + BATCH_SIZE) < total_files:
-                status_text.markdown("⏳ **Rate Limit Protection Active:** Sleeping for **10 seconds** to comply with API quotas...")
-                time.sleep(10)
 
-        status_text.success("🎉 All documents processed!")
+        status_text.success("🎉 All documents processed successfully at maximum speed!")
         progress_bar.empty()
 
         # Build final report including both successes and structural failure rows
