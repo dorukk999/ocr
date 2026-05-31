@@ -8,67 +8,31 @@ import concurrent.futures
 from PIL import Image
 import io
 
+# --- AYARLAR ---
+APP_PASSWORD = "SizinBelirlediginizSifre" # Müşterinize vereceğiniz genel şifre
+
 # Page Configuration
 st.set_page_config(page_title="AI Powered Document Extraction Tool", layout="wide")
 
-# Initialize Session State for File Uploader Key to enable global clear
-if "uploader_key" not in st.session_state:
-    st.session_state["uploader_key"] = 0
+# Initialize Session State
+if "authenticated" not in st.session_state: st.session_state["authenticated"] = False
+if "api_key" not in st.session_state: st.session_state["api_key"] = ""
+if "uploader_key" not in st.session_state: st.session_state["uploader_key"] = 0
 
-# Master Corporate Schema - FIXED ORDER RESILIENT
+# Master Corporate Schema
 OFFICIAL_SCHEMA_ORDER = [
-    "Document Type", 
-    "Full Name", 
-    "Arabic Name", 
-    "Nationality",
-    "Emirates ID Number (784-xxxx-xxxxxxx-x)", 
-    "Passport Number",
-    "Work Permit Number (9 Digits)", 
-    "Personal Number (14 Digits)",
-    "Permit / Security Pass / Card Number",
-    "UID / Unified Number",
-    "Date of Birth", 
-    "Date of Issue", 
-    "Date of Expiry", 
-    "Employer / Company Name",
-    "Occupation / Trade", 
-    "Site Location", 
-    "Arabic Site Location Names",
-    "English Translation of Arabic Site Locations", 
-    "Issuing Authority",
-    "Any other visible document-specific fields", 
-    "Confidence level for each extracted field",
-    "Remarks for unclear or doubtful fields"
+    "Document Type", "Full Name", "Arabic Name", "Nationality",
+    "Emirates ID Number (784-xxxx-xxxxxxx-x)", "Passport Number",
+    "Work Permit Number (9 Digits)", "Personal Number (14 Digits)",
+    "Permit / Security Pass / Card Number", "UID / Unified Number",
+    "Date of Birth", "Date of Issue", "Date of Expiry", 
+    "Employer / Company Name", "Occupation / Trade", "Site Location", 
+    "Arabic Site Location Names", "English Translation of Arabic Site Locations", 
+    "Issuing Authority", "Any other visible document-specific fields", 
+    "Confidence level for each extracted field", "Remarks for unclear or doubtful fields"
 ]
 
 TARGET_MODEL = "models/gemini-2.5-flash"
-
-st.title("📂 AI-Powered Document Data Extraction Tool")
-st.subheader("Official Schema Compliant & Parallel Processing")
-
-with st.sidebar:
-    st.header("⚙️ Execution Settings")
-    api_mode = st.selectbox("Execution Mode", ["Demo Mode (Simulated AI)", "Live Production Mode"])
-    pipeline_speed = st.selectbox("Pipeline Speed", ["Parallel (Fast)", "Sequential (Safe)"])
-    
-    gemini_key = ""
-    if api_mode == "Live Production Mode":
-        gemini_key = st.text_input("Gemini API Key", type="password", placeholder="AIzaSy...")
-
-    custom_field = st.text_input("➕ Extract Custom Field", key="custom_field_input")
-    enable_consolidation = st.checkbox("Enable Person-Based Consolidation")
-
-active_schema = OFFICIAL_SCHEMA_ORDER.copy()
-if custom_field:
-    active_schema.insert(19, custom_field)
-
-col_upload, col_clear = st.columns([6, 1])
-with col_upload:
-    uploaded_files = st.file_uploader("Click to Add Documents", type=["png", "jpg", "jpeg", "pdf"], accept_multiple_files=True, key=f"uploader_{st.session_state['uploader_key']}")
-with col_clear:
-    if st.button("🗑️ Clear All", type="secondary", use_container_width=True):
-        st.session_state["uploader_key"] += 1 
-        st.rerun()
 
 def optimize_image(file_bytes):
     img = Image.open(io.BytesIO(file_bytes))
@@ -80,7 +44,7 @@ def optimize_image(file_bytes):
     img.save(buffer, format="JPEG", quality=98)
     return buffer.getvalue()
 
-def process_file_backend(file_bytes, unique_filename, incoming_key, model_name, target_schema):
+def process_file_backend(file_bytes, unique_filename, incoming_key, target_schema):
     try:
         client = genai.Client(api_key=incoming_key)
         is_pdf = unique_filename.lower().endswith('.pdf')
@@ -94,7 +58,7 @@ def process_file_backend(file_bytes, unique_filename, incoming_key, model_name, 
         
         schema_prompt = f"You are an advanced corporate OCR engine. Output exactly these keys: {json.dumps(target_schema)}."
         response = client.models.generate_content(
-            model=model_name,
+            model=TARGET_MODEL,
             contents=[schema_prompt, {"inline_data": {"data": base64_data, "mime_type": mime_type}}],
             config=types.GenerateContentConfig(response_mime_type="application/json")
         )
@@ -105,45 +69,58 @@ def process_file_backend(file_bytes, unique_filename, incoming_key, model_name, 
             safe_json[col] = extracted_json[found_key] if found_key else "-"
         return safe_json
     except Exception as e:
-        fail_row = {col: "-" for col in target_schema}
-        fail_row["Source_File_Name"] = unique_filename
-        fail_row["Document Type"] = "FAILED"
-        fail_row["Remarks for unclear or doubtful fields"] = str(e)
-        return fail_row
+        return {"Source_File_Name": unique_filename, "Document Type": "FAILED", "Remarks for unclear or doubtful fields": str(e)}
 
-if st.button("🚀 Run Extraction Pipeline", type="primary"):
-    if not uploaded_files:
-        st.error("Please upload at least one document.")
-    else:
+def main():
+    st.title("📂 Kurumsal AI Veri Ayıklama Aracı")
+
+    # --- 1. ADIM: UYGULAMA GİRİŞİ ---
+    if not st.session_state["authenticated"]:
+        st.subheader("🔒 Uygulama Şifresi ile Giriş")
+        password_input = st.text_input("Şifre:", type="password")
+        if st.button("Giriş Yap"):
+            if password_input == APP_PASSWORD:
+                st.session_state["authenticated"] = True
+                st.rerun()
+            else:
+                st.error("Yanlış şifre!")
+        return
+
+    # --- 2. ADIM: API AYARLARI & ANA İŞLEMLER ---
+    with st.sidebar:
+        st.header("⚙️ Ayarlar")
+        st.session_state["api_key"] = st.text_input("Gemini API Anahtarınız:", type="password", value=st.session_state["api_key"])
+        custom_field = st.text_input("➕ Custom Field")
+        enable_consolidation = st.checkbox("Enable Consolidation")
+        if st.button("Çıkış Yap"):
+            st.session_state["authenticated"] = False
+            st.rerun()
+
+    active_schema = OFFICIAL_SCHEMA_ORDER.copy()
+    if custom_field: active_schema.insert(19, custom_field)
+
+    uploaded_files = st.file_uploader("Dosya Seç", type=["png", "jpg", "jpeg", "pdf"], accept_multiple_files=True)
+    
+    if uploaded_files and st.session_state["api_key"] and st.button("🚀 Run Extraction"):
         raw_results = []
-        total_files = len(uploaded_files)
+        total = len(uploaded_files)
         progress_bar = st.progress(0)
-        table_placeholder = st.empty() 
+        table_placeholder = st.empty()
+        files_data = [(f.read(), f.name) for f in uploaded_files]
         
-        unique_file_tuples = [(f.read(), f.name) for f in uploaded_files]
-        
-        if api_mode == "Live Production Mode" and pipeline_speed == "Parallel (Fast)":
-            with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
-                futures = {executor.submit(process_file_backend, f_bytes, f_name, gemini_key, TARGET_MODEL, active_schema): f_name for f_bytes, f_name in unique_file_tuples}
-                for future in concurrent.futures.as_completed(futures):
-                    raw_results.append(future.result())
-                    progress_bar.progress(len(raw_results) / total_files)
-                    table_placeholder.dataframe(pd.DataFrame(raw_results), use_container_width=True)
-        else:
-            for f_bytes, f_name in unique_file_tuples:
-                if api_mode == "Live Production Mode":
-                    res = process_file_backend(f_bytes, f_name, gemini_key, TARGET_MODEL, active_schema)
-                else:
-                    res = {col: "-" for col in active_schema}
-                    res["Source_File_Name"] = f_name
-                raw_results.append(res)
-                progress_bar.progress(len(raw_results) / total_files)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
+            futures = {executor.submit(process_file_backend, fb, fn, st.session_state["api_key"], active_schema): fn for fb, fn in files_data}
+            for future in concurrent.futures.as_completed(futures):
+                raw_results.append(future.result())
+                progress_bar.progress(len(raw_results) / total)
                 table_placeholder.dataframe(pd.DataFrame(raw_results), use_container_width=True)
 
-        st.success("🎉 İşlem tamamlandı!")
+        df = pd.DataFrame(raw_results)
+        if enable_consolidation and "Full Name" in df.columns:
+            df = df.groupby('Full Name').agg(lambda x: ' / '.join(set(x.astype(str).str.strip()))).reset_index()
         
-        if raw_results:
-            df = pd.DataFrame(raw_results)
-            if enable_consolidation and "Full Name" in df.columns:
-                df = df.groupby('Full Name').agg(lambda x: ' / '.join(set(x.astype(str).str.strip()))).reset_index()
-            st.download_button("📥 Download CSV", df.to_csv(index=False).encode('utf-8'), "Report.csv", "text/csv")
+        st.success("🎉 İşlem tamamlandı!")
+        st.download_button("📥 Download CSV", df.to_csv(index=False).encode('utf-8'), "Report.csv", "text/csv")
+
+if __name__ == "__main__":
+    main()
