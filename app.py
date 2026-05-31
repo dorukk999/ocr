@@ -8,11 +8,11 @@ import concurrent.futures
 from PIL import Image
 import io
 
-# --- AYARLAR ---
-APP_PASSWORD = "SizinBelirlediginizSifre" # Müşterinize vereceğiniz genel şifre
+# --- SETTINGS ---
+APP_PASSWORD = "SizinBelirlediginizSifre" # You can update this password
 
 # Page Configuration
-st.set_page_config(page_title="AI Powered Document Extraction Tool", layout="wide")
+st.set_page_config(page_title="AI Document Extraction Tool", layout="wide")
 
 # Initialize Session State
 if "authenticated" not in st.session_state: st.session_state["authenticated"] = False
@@ -72,36 +72,36 @@ def process_file_backend(file_bytes, unique_filename, incoming_key, target_schem
         return {"Source_File_Name": unique_filename, "Document Type": "FAILED", "Remarks for unclear or doubtful fields": str(e)}
 
 def main():
-    st.title("📂 Kurumsal AI Veri Ayıklama Aracı")
+    st.title("📂 Corporate AI Data Extraction Tool")
 
-    # --- 1. ADIM: UYGULAMA GİRİŞİ ---
+    # --- 1. STEP: APP LOGIN ---
     if not st.session_state["authenticated"]:
-        st.subheader("🔒 Uygulama Şifresi ile Giriş")
-        password_input = st.text_input("Şifre:", type="password")
-        if st.button("Giriş Yap"):
+        st.subheader("🔒 Enter Application Password")
+        password_input = st.text_input("Password:", type="password")
+        if st.button("Login"):
             if password_input == APP_PASSWORD:
                 st.session_state["authenticated"] = True
                 st.rerun()
             else:
-                st.error("Yanlış şifre!")
+                st.error("Incorrect password!")
         return
 
-    # --- 2. ADIM: API AYARLARI & ANA İŞLEMLER ---
+    # --- 2. STEP: API SETTINGS & MAIN OPERATIONS ---
     with st.sidebar:
-        st.header("⚙️ Ayarlar")
-        st.session_state["api_key"] = st.text_input("Gemini API Anahtarınız:", type="password", value=st.session_state["api_key"])
-        custom_field = st.text_input("➕ Custom Field")
-        enable_consolidation = st.checkbox("Enable Consolidation")
-        if st.button("Çıkış Yap"):
+        st.header("⚙️ Settings")
+        st.session_state["api_key"] = st.text_input("Enter your Gemini API Key:", type="password", value=st.session_state["api_key"])
+        custom_field = st.text_input("➕ Extract Custom Field")
+        enable_consolidation = st.checkbox("Enable Person-Based Consolidation")
+        if st.button("Logout"):
             st.session_state["authenticated"] = False
             st.rerun()
 
     active_schema = OFFICIAL_SCHEMA_ORDER.copy()
     if custom_field: active_schema.insert(19, custom_field)
 
-    uploaded_files = st.file_uploader("Dosya Seç", type=["png", "jpg", "jpeg", "pdf"], accept_multiple_files=True)
+    uploaded_files = st.file_uploader("Upload Documents", type=["png", "jpg", "jpeg", "pdf"], accept_multiple_files=True)
     
-    if uploaded_files and st.session_state["api_key"] and st.button("🚀 Run Extraction"):
+    if uploaded_files and st.session_state["api_key"] and st.button("🚀 Run Extraction Pipeline"):
         raw_results = []
         total = len(uploaded_files)
         progress_bar = st.progress(0)
@@ -119,8 +119,8 @@ def main():
         if enable_consolidation and "Full Name" in df.columns:
             df = df.groupby('Full Name').agg(lambda x: ' / '.join(set(x.astype(str).str.strip()))).reset_index()
         
-        st.success("🎉 İşlem tamamlandı!")
-        st.download_button("📥 Download CSV", df.to_csv(index=False).encode('utf-8'), "Report.csv", "text/csv")
+        st.success("🎉 Processing completed successfully!")
+        st.download_button("📥 Download CSV Report", df.to_csv(index=False).encode('utf-8'), "Consolidated_Report.csv", "text/csv")
 
 if __name__ == "__main__":
     main()
