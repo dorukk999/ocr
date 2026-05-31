@@ -9,7 +9,7 @@ from PIL import Image
 import io
 
 # --- SETTINGS ---
-APP_PASSWORD = "SizinBelirlediginizSifre" # You can update this password
+APP_PASSWORD = "DataOCR_98123606513" # You can update this password
 
 # Page Configuration
 st.set_page_config(page_title="AI Document Extraction Tool", layout="wide")
