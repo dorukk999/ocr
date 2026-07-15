@@ -59,7 +59,13 @@ def process_file_backend(file_bytes, unique_filename, incoming_key, target_schem
             base64_data = base64.b64encode(optimized_bytes).decode("utf-8")
             mime_type = "image/jpeg"
 
-        schema_prompt = f"You are an advanced corporate OCR engine. Output exactly these keys: {json.dumps(target_schema)}."
+        schema_prompt = (
+            "You are an advanced corporate OCR engine. "
+            f"Output exactly these keys: {json.dumps(target_schema)}. "
+            "Every value must be a plain string (or number/date as text) — never a nested object or dict. "
+            "Do not attach per-field confidence or remarks inside a value; use the dedicated "
+            "'Confidence level for each extracted field' and 'Remarks for unclear or doubtful fields' keys for that instead."
+        )
 
         last_error = None
         for attempt in range(MAX_RETRIES):
@@ -73,7 +79,10 @@ def process_file_backend(file_bytes, unique_filename, incoming_key, target_schem
                 safe_json = {"Source_File_Name": unique_filename}
                 for col in target_schema:
                     found_key = next((k for k in extracted_json if k.lower().strip() == col.lower().strip()), None)
-                    safe_json[col] = extracted_json[found_key] if found_key else "-"
+                    value = extracted_json[found_key] if found_key else "-"
+                    if isinstance(value, dict):
+                        value = value.get("value", value)
+                    safe_json[col] = value
                 safe_json["Processing Time (s)"] = round(time.time() - start_time, 1)
                 return safe_json
             except genai_errors.APIError as e:
@@ -151,7 +160,7 @@ def main():
             df = df.groupby('Full Name').agg(lambda x: ' / '.join(set(x.astype(str).str.strip()))).reset_index()
         
         st.success("🎉 Processing completed successfully!")
-        st.download_button("📥 Download CSV Report", df.to_csv(index=False).encode('utf-8'), "Consolidated_Report.csv", "text/csv")
+        st.download_button("📥 Download CSV Report", df.to_csv(index=False).encode('utf-8-sig'), "Consolidated_Report.csv", "text/csv")
 
 if __name__ == "__main__":
     main()
