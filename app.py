@@ -45,6 +45,7 @@ FIELD_HINTS = {
     "Full Name": "the document holder's own given name(s) and surname, exactly as printed near a 'Name' / 'الاسم' label. Never the nationality, country, employer, or job title. Always output this in Latin/English script — if the document only shows the name in Arabic, phonetically transliterate it to Latin letters. Never put Arabic script in this field (Arabic script belongs only in 'Arabic Name').",
     "Arabic Name": "the same person's name in Arabic script, next to the Arabic 'الاسم' label. Never the Arabic word for a country/nationality.",
     "Nationality": "the person's country/nationality, next to a 'Nationality' / 'الجنسية' label (e.g. Nepal, India). Never the person's name.",
+    "UID / Unified Number": "ONLY fill this in if the document has an explicit label reading 'Unified No.', 'UID', 'Unified Number', or the Arabic 'الرقم الموحد' directly next to the value. This field is an exception to the contextual-inference rule below: never derive, compute, or extract it from the Emirates ID number, card number, chip number, or any part of the MRZ string, even if the digit count matches — those are different fields, not the Unified Number. If there is no such explicit label, always output 'N/A' here, no matter how plausible a nearby number looks.",
 }
 
 # Common nationality/demonym words seen on UAE labor/ID documents — used to flag a Full Name
@@ -93,6 +94,18 @@ def compute_review_flags(safe_json):
             flags.append("Full Name looks like a nationality — verify")
         elif " " not in full_name:
             flags.append("Full Name is a single word — verify")
+
+    uid = str(safe_json.get("UID / Unified Number", "")).strip()
+    emirates_id = str(safe_json.get("Emirates ID Number (784-xxxx-xxxxxxx-x)", "")).strip()
+    if uid and uid.lower() not in ("-", "n/a"):
+        uid_digits = re.sub(r'\D', '', uid)
+        id_digits = re.sub(r'\D', '', emirates_id)
+        if uid_digits and id_digits:
+            match = difflib.SequenceMatcher(None, uid_digits, id_digits).find_longest_match(0, len(uid_digits), 0, len(id_digits))
+            fully_contained = match.size == len(uid_digits) and len(uid_digits) >= 5
+            if match.size >= 8 or fully_contained:
+                flags.append("UID overlaps with Emirates ID/MRZ digits, likely derived not labeled — verify")
+
     return "; ".join(flags)
 
 def build_excel_bytes(df):
