@@ -11,6 +11,7 @@ import concurrent.futures
 import difflib
 import re
 import time
+import uuid
 from PIL import Image
 import io
 
@@ -260,26 +261,31 @@ CHUNK_SIZE = 50
 MAX_WORKERS = 5
 
 def process_batch(files_data, api_key, schema, model, progress_bar, table_placeholder, total):
+    """files_data: list of (bytes, display_filename, unique_key). unique_key
+    (not the filename) is used to track failures/retries, since the same
+    filename (e.g. 'EID.jpg') commonly repeats across different people."""
     processed_count = 0
     last_render = 0.0
     for i in range(0, len(files_data), CHUNK_SIZE):
         chunk = files_data[i:i + CHUNK_SIZE]
-        chunk_bytes_by_name = {fn: fb for fb, fn in chunk}
+        chunk_bytes_by_key = {uk: fb for fb, fn, uk in chunk}
         with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-            futures = {executor.submit(process_file_backend, fb, fn, api_key, schema, model): fn for fb, fn in chunk}
+            futures = {executor.submit(process_file_backend, fb, fn, api_key, schema, model): uk for fb, fn, uk in chunk}
             for future in concurrent.futures.as_completed(futures):
+                unique_key = futures[future]
                 result = future.result()
+                result["__key"] = unique_key
                 st.session_state["batch_results"].append(result)
                 processed_count += 1
-                filename = result["Source_File_Name"]
                 if result.get("Document Type") == "FAILED":
-                    st.session_state["failed_bytes"][filename] = chunk_bytes_by_name[filename]
+                    st.session_state["failed_bytes"][unique_key] = (result["Source_File_Name"], chunk_bytes_by_key[unique_key])
                 else:
-                    st.session_state["failed_bytes"].pop(filename, None)
+                    st.session_state["failed_bytes"].pop(unique_key, None)
                 progress_bar.progress(processed_count / total)
                 now = time.time()
                 if now - last_render > 0.5 or processed_count == total:
-                    table_placeholder.dataframe(pd.DataFrame(st.session_state["batch_results"]), use_container_width=True)
+                    display_df = pd.DataFrame(st.session_state["batch_results"]).drop(columns="__key", errors="ignore")
+                    table_placeholder.dataframe(display_df, use_container_width=True)
                     last_render = now
 
 def main():
@@ -324,23 +330,26 @@ def main():
 
     uploaded_files = st.file_uploader("Upload Documents", type=["png", "jpg", "jpeg", "pdf"], accept_multiple_files=True)
 
-    if uploaded_files and st.session_state["api_key"] and st.button("🚀 Run Extraction Pipeline"):
+    if st.session_state["batch_results"] and st.button("🗑️ Clear All Results (start a new batch)"):
         st.session_state["batch_results"] = []
         st.session_state["failed_bytes"] = {}
+        st.rerun()
+
+    if uploaded_files and st.session_state["api_key"] and st.button("🚀 Run Extraction Pipeline"):
         total = len(uploaded_files)
         progress_bar = st.progress(0)
         table_placeholder = st.empty()
-        files_data = [(f.read(), f.name) for f in uploaded_files]
+        files_data = [(f.read(), f.name, f"{f.name}::{uuid.uuid4().hex[:8]}") for f in uploaded_files]
         process_batch(files_data, st.session_state["api_key"], active_schema, selected_model, progress_bar, table_placeholder, total)
-        st.success(f"🎉 Processing completed — {len(st.session_state['batch_results'])} file(s) processed.")
+        st.success(f"🎉 Processing completed — {len(st.session_state['batch_results'])} total file(s) accumulated so far.")
 
     if st.session_state["failed_bytes"]:
         n_failed = len(st.session_state["failed_bytes"])
         st.warning(f"⚠️ {n_failed} file(s) failed after retries.")
         if st.button(f"🔁 Retry {n_failed} Failed File(s) Only"):
-            failed_names = set(st.session_state["failed_bytes"].keys())
-            st.session_state["batch_results"] = [r for r in st.session_state["batch_results"] if r["Source_File_Name"] not in failed_names]
-            files_data = [(fb, fn) for fn, fb in st.session_state["failed_bytes"].items()]
+            failed_keys = set(st.session_state["failed_bytes"].keys())
+            st.session_state["batch_results"] = [r for r in st.session_state["batch_results"] if r.get("__key") not in failed_keys]
+            files_data = [(fb, fn, uk) for uk, (fn, fb) in st.session_state["failed_bytes"].items()]
             total = len(files_data)
             progress_bar = st.progress(0)
             table_placeholder = st.empty()
@@ -348,7 +357,7 @@ def main():
             st.rerun()
 
     if st.session_state["batch_results"]:
-        df = pd.DataFrame(st.session_state["batch_results"])
+        df = pd.DataFrame(st.session_state["batch_results"]).drop(columns="__key", errors="ignore")
         if enable_consolidation and "Full Name" in df.columns:
             df = build_person_view(df)
 
