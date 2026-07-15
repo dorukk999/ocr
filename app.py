@@ -203,6 +203,32 @@ def process_file_backend(file_bytes, unique_filename, incoming_key, target_schem
             "Processing Time (s)": round(time.time() - start_time, 1),
         }
 
+CHUNK_SIZE = 50
+MAX_WORKERS = 5
+
+def process_batch(files_data, api_key, schema, model, progress_bar, table_placeholder, total):
+    processed_count = 0
+    last_render = 0.0
+    for i in range(0, len(files_data), CHUNK_SIZE):
+        chunk = files_data[i:i + CHUNK_SIZE]
+        chunk_bytes_by_name = {fn: fb for fb, fn in chunk}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            futures = {executor.submit(process_file_backend, fb, fn, api_key, schema, model): fn for fb, fn in chunk}
+            for future in concurrent.futures.as_completed(futures):
+                result = future.result()
+                st.session_state["batch_results"].append(result)
+                processed_count += 1
+                filename = result["Source_File_Name"]
+                if result.get("Document Type") == "FAILED":
+                    st.session_state["failed_bytes"][filename] = chunk_bytes_by_name[filename]
+                else:
+                    st.session_state["failed_bytes"].pop(filename, None)
+                progress_bar.progress(processed_count / total)
+                now = time.time()
+                if now - last_render > 0.5 or processed_count == total:
+                    table_placeholder.dataframe(pd.DataFrame(st.session_state["batch_results"]), use_container_width=True)
+                    last_render = now
+
 def main():
     st.title("📂 Corporate AI Data Extraction Tool")
 
@@ -237,31 +263,39 @@ def main():
     active_schema = OFFICIAL_SCHEMA_ORDER.copy()
     if custom_field: active_schema.insert(19, custom_field)
 
+    if "batch_results" not in st.session_state: st.session_state["batch_results"] = []
+    if "failed_bytes" not in st.session_state: st.session_state["failed_bytes"] = {}
+
     uploaded_files = st.file_uploader("Upload Documents", type=["png", "jpg", "jpeg", "pdf"], accept_multiple_files=True)
-    
+
     if uploaded_files and st.session_state["api_key"] and st.button("🚀 Run Extraction Pipeline"):
-        raw_results = []
+        st.session_state["batch_results"] = []
+        st.session_state["failed_bytes"] = {}
         total = len(uploaded_files)
         progress_bar = st.progress(0)
         table_placeholder = st.empty()
         files_data = [(f.read(), f.name) for f in uploaded_files]
-        
-        last_render = 0.0
-        with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
-            futures = {executor.submit(process_file_backend, fb, fn, st.session_state["api_key"], active_schema, selected_model): fn for fb, fn in files_data}
-            for future in concurrent.futures.as_completed(futures):
-                raw_results.append(future.result())
-                progress_bar.progress(len(raw_results) / total)
-                now = time.time()
-                if now - last_render > 0.5 or len(raw_results) == total:
-                    table_placeholder.dataframe(pd.DataFrame(raw_results), use_container_width=True)
-                    last_render = now
+        process_batch(files_data, st.session_state["api_key"], active_schema, selected_model, progress_bar, table_placeholder, total)
+        st.success(f"🎉 Processing completed — {len(st.session_state['batch_results'])} file(s) processed.")
 
-        df = pd.DataFrame(raw_results)
+    if st.session_state["failed_bytes"]:
+        n_failed = len(st.session_state["failed_bytes"])
+        st.warning(f"⚠️ {n_failed} file(s) failed after retries.")
+        if st.button(f"🔁 Retry {n_failed} Failed File(s) Only"):
+            failed_names = set(st.session_state["failed_bytes"].keys())
+            st.session_state["batch_results"] = [r for r in st.session_state["batch_results"] if r["Source_File_Name"] not in failed_names]
+            files_data = [(fb, fn) for fn, fb in st.session_state["failed_bytes"].items()]
+            total = len(files_data)
+            progress_bar = st.progress(0)
+            table_placeholder = st.empty()
+            process_batch(files_data, st.session_state["api_key"], active_schema, selected_model, progress_bar, table_placeholder, total)
+            st.rerun()
+
+    if st.session_state["batch_results"]:
+        df = pd.DataFrame(st.session_state["batch_results"])
         if enable_consolidation and "Full Name" in df.columns:
             df = df.groupby('Full Name').agg(lambda x: ' / '.join(set(x.astype(str).str.strip()))).reset_index()
-        
-        st.success("🎉 Processing completed successfully!")
+
         st.download_button(
             "📊 Download Excel Report (.xlsx)",
             build_excel_bytes(df),
