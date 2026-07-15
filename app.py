@@ -111,6 +111,54 @@ def compute_review_flags(safe_json):
 
     return "; ".join(flags)
 
+# Buckets a document falls into, used to prefix its columns in the per-person wide view.
+DOC_TYPE_BUCKETS = [
+    ("Passport", ["passport"]),
+    ("Emirates ID", ["resident identity", "emirates id", " eid", "identity card"]),
+    ("Security Pass", ["security pass", "defense", "military", "access card", "permit"]),
+]
+
+def classify_doc_type(document_type_text, filename):
+    text = f"{document_type_text} {filename}".lower()
+    for bucket_name, keywords in DOC_TYPE_BUCKETS:
+        if any(kw in text for kw in keywords):
+            return bucket_name
+    return "Other Document"
+
+def build_person_view(df):
+    """One row per person (grouped by Full Name), with each document's fields
+    prefixed by document type (e.g. 'Passport - Passport Number') so nothing
+    from different documents collides in the same column."""
+    df = df.copy()
+    df["__bucket"] = [classify_doc_type(dt, fn) for dt, fn in zip(df.get("Document Type", ""), df.get("Source_File_Name", ""))]
+
+    shared_cols = ["Full Name", "Arabic Name", "Nationality"]
+    per_doc_cols = [c for c in df.columns if c not in shared_cols + ["__bucket", "Source_File_Name"]]
+
+    people = {}
+    order = []
+    for _, row in df.iterrows():
+        name = str(row.get("Full Name", "")).strip()
+        # Match names case-insensitively (e.g. "Manish Kumar Sah" vs "MANISH KUMAR SAH" are the same person)
+        key = name.lower() if name and name.lower() not in ("-", "n/a") else f"__unmatched__{row.get('Source_File_Name', '')}"
+        if key not in people:
+            people[key] = {"Full Name": name}
+            for c in shared_cols[1:]:
+                people[key][c] = row.get(c, "")
+            order.append(key)
+        for c in shared_cols[1:]:
+            if not str(people[key].get(c, "")).strip() or str(people[key][c]).strip().lower() in ("-", "n/a"):
+                people[key][c] = row.get(c, "")
+        bucket = row["__bucket"]
+        for c in per_doc_cols:
+            col_name = f"{bucket} - {c}"
+            value = row.get(c, "")
+            existing = people[key].get(col_name)
+            if existing is None or str(existing).strip().lower() in ("", "-", "n/a"):
+                people[key][col_name] = value
+
+    return pd.DataFrame([people[k] for k in order])
+
 def build_excel_bytes(df):
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
@@ -118,7 +166,9 @@ def build_excel_bytes(df):
         worksheet = writer.sheets["Report"]
         wrap = Alignment(wrap_text=True, vertical="top")
         for col_idx, col_name in enumerate(df.columns, start=1):
-            worksheet.column_dimensions[get_column_letter(col_idx)].width = COLUMN_WIDTHS.get(col_name, 18)
+            base_name = col_name.split(" - ", 1)[-1]
+            width = COLUMN_WIDTHS.get(col_name, COLUMN_WIDTHS.get(base_name, 18))
+            worksheet.column_dimensions[get_column_letter(col_idx)].width = width
         for row in worksheet.iter_rows(min_row=1, max_row=worksheet.max_row):
             for cell in row:
                 cell.alignment = wrap
@@ -258,7 +308,10 @@ def main():
             help="flash-lite is faster and cheaper; test accuracy on your documents before relying on it."
         )
         custom_field = st.text_input("➕ Extract Custom Field")
-        enable_consolidation = st.checkbox("Enable Person-Based Consolidation")
+        enable_consolidation = st.checkbox(
+            "Enable Person-Based Consolidation",
+            help="One row per person instead of one row per document. Each document's fields get their own prefixed columns (e.g. 'Passport - Passport Number', 'Emirates ID - Date of Expiry'), so nothing from different documents collides in the same column."
+        )
         if st.button("Logout"):
             st.session_state["authenticated"] = False
             st.rerun()
@@ -297,7 +350,7 @@ def main():
     if st.session_state["batch_results"]:
         df = pd.DataFrame(st.session_state["batch_results"])
         if enable_consolidation and "Full Name" in df.columns:
-            df = df.groupby('Full Name').agg(lambda x: ' / '.join(set(x.astype(str).str.strip()))).reset_index()
+            df = build_person_view(df)
 
         st.download_button(
             "📊 Download Excel Report (.xlsx)",
