@@ -2,9 +2,11 @@ import streamlit as st
 import pandas as pd
 from google import genai
 from google.genai import types
+from google.genai import errors as genai_errors
 import json
 import base64
 import concurrent.futures
+import time
 from PIL import Image
 import io
 
@@ -32,19 +34,20 @@ OFFICIAL_SCHEMA_ORDER = [
     "Confidence level for each extracted field", "Remarks for unclear or doubtful fields"
 ]
 
-TARGET_MODEL = "models/gemini-2.5-flash"
+MAX_RETRIES = 3
 
 def optimize_image(file_bytes):
     img = Image.open(io.BytesIO(file_bytes))
     if img.mode in ("RGBA", "P"): img = img.convert("RGB")
-    max_size = 2400 
+    max_size = 1600
     if img.width > max_size or img.height > max_size:
         img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
     buffer = io.BytesIO()
-    img.save(buffer, format="JPEG", quality=98)
+    img.save(buffer, format="JPEG", quality=90)
     return buffer.getvalue()
 
-def process_file_backend(file_bytes, unique_filename, incoming_key, target_schema):
+def process_file_backend(file_bytes, unique_filename, incoming_key, target_schema, target_model):
+    start_time = time.time()
     try:
         client = genai.Client(api_key=incoming_key)
         is_pdf = unique_filename.lower().endswith('.pdf')
@@ -55,21 +58,39 @@ def process_file_backend(file_bytes, unique_filename, incoming_key, target_schem
             optimized_bytes = optimize_image(file_bytes)
             base64_data = base64.b64encode(optimized_bytes).decode("utf-8")
             mime_type = "image/jpeg"
-        
+
         schema_prompt = f"You are an advanced corporate OCR engine. Output exactly these keys: {json.dumps(target_schema)}."
-        response = client.models.generate_content(
-            model=TARGET_MODEL,
-            contents=[schema_prompt, {"inline_data": {"data": base64_data, "mime_type": mime_type}}],
-            config=types.GenerateContentConfig(response_mime_type="application/json")
-        )
-        extracted_json = json.loads(response.text.strip())
-        safe_json = {"Source_File_Name": unique_filename}
-        for col in target_schema:
-            found_key = next((k for k in extracted_json if k.lower().strip() == col.lower().strip()), None)
-            safe_json[col] = extracted_json[found_key] if found_key else "-"
-        return safe_json
+
+        last_error = None
+        for attempt in range(MAX_RETRIES):
+            try:
+                response = client.models.generate_content(
+                    model=target_model,
+                    contents=[schema_prompt, {"inline_data": {"data": base64_data, "mime_type": mime_type}}],
+                    config=types.GenerateContentConfig(response_mime_type="application/json")
+                )
+                extracted_json = json.loads(response.text.strip())
+                safe_json = {"Source_File_Name": unique_filename}
+                for col in target_schema:
+                    found_key = next((k for k in extracted_json if k.lower().strip() == col.lower().strip()), None)
+                    safe_json[col] = extracted_json[found_key] if found_key else "-"
+                safe_json["Processing Time (s)"] = round(time.time() - start_time, 1)
+                return safe_json
+            except genai_errors.APIError as e:
+                last_error = e
+                is_retryable = e.code in (429, 500, 503)
+                if is_retryable and attempt < MAX_RETRIES - 1:
+                    time.sleep(2 ** attempt)
+                    continue
+                raise
+        raise last_error
     except Exception as e:
-        return {"Source_File_Name": unique_filename, "Document Type": "FAILED", "Remarks for unclear or doubtful fields": str(e)}
+        return {
+            "Source_File_Name": unique_filename,
+            "Document Type": "FAILED",
+            "Remarks for unclear or doubtful fields": str(e),
+            "Processing Time (s)": round(time.time() - start_time, 1),
+        }
 
 def main():
     st.title("📂 Corporate AI Data Extraction Tool")
@@ -90,6 +111,12 @@ def main():
     with st.sidebar:
         st.header("⚙️ Settings")
         st.session_state["api_key"] = st.text_input("Enter your Gemini API Key:", type="password", value=st.session_state["api_key"])
+        selected_model = st.selectbox(
+            "Model",
+            ["models/gemini-2.5-flash", "models/gemini-2.5-flash-lite"],
+            index=0,
+            help="flash-lite is faster and cheaper; test accuracy on your documents before relying on it."
+        )
         custom_field = st.text_input("➕ Extract Custom Field")
         enable_consolidation = st.checkbox("Enable Person-Based Consolidation")
         if st.button("Logout"):
@@ -108,12 +135,16 @@ def main():
         table_placeholder = st.empty()
         files_data = [(f.read(), f.name) for f in uploaded_files]
         
+        last_render = 0.0
         with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
-            futures = {executor.submit(process_file_backend, fb, fn, st.session_state["api_key"], active_schema): fn for fb, fn in files_data}
+            futures = {executor.submit(process_file_backend, fb, fn, st.session_state["api_key"], active_schema, selected_model): fn for fb, fn in files_data}
             for future in concurrent.futures.as_completed(futures):
                 raw_results.append(future.result())
                 progress_bar.progress(len(raw_results) / total)
-                table_placeholder.dataframe(pd.DataFrame(raw_results), use_container_width=True)
+                now = time.time()
+                if now - last_render > 0.5 or len(raw_results) == total:
+                    table_placeholder.dataframe(pd.DataFrame(raw_results), use_container_width=True)
+                    last_render = now
 
         df = pd.DataFrame(raw_results)
         if enable_consolidation and "Full Name" in df.columns:
