@@ -9,6 +9,7 @@ import json
 import base64
 import concurrent.futures
 import difflib
+import re
 import time
 from PIL import Image
 import io
@@ -41,7 +42,7 @@ MAX_RETRIES = 3
 
 # Fields the model has been observed to confuse with one another; give it explicit, disambiguating rules.
 FIELD_HINTS = {
-    "Full Name": "the document holder's own given name(s) and surname, exactly as printed near a 'Name' / 'الاسم' label. Never the nationality, country, employer, or job title.",
+    "Full Name": "the document holder's own given name(s) and surname, exactly as printed near a 'Name' / 'الاسم' label. Never the nationality, country, employer, or job title. Always output this in Latin/English script — if the document only shows the name in Arabic, phonetically transliterate it to Latin letters. Never put Arabic script in this field (Arabic script belongs only in 'Arabic Name').",
     "Arabic Name": "the same person's name in Arabic script, next to the Arabic 'الاسم' label. Never the Arabic word for a country/nationality.",
     "Nationality": "the person's country/nationality, next to a 'Nationality' / 'الجنسية' label (e.g. Nepal, India). Never the person's name.",
 }
@@ -80,11 +81,15 @@ COLUMN_WIDTHS = {
     "Processing Time (s)": 12,
 }
 
+ARABIC_SCRIPT_RE = re.compile(r'[؀-ۿ]')
+
 def compute_review_flags(safe_json):
     full_name = str(safe_json.get("Full Name", "")).strip()
     flags = []
     if full_name and full_name.lower() not in ("-", "n/a"):
-        if difflib.get_close_matches(full_name.lower(), NATIONALITY_WORDS, n=1, cutoff=0.8):
+        if ARABIC_SCRIPT_RE.search(full_name):
+            flags.append("Full Name contains Arabic script — verify")
+        elif difflib.get_close_matches(full_name.lower(), NATIONALITY_WORDS, n=1, cutoff=0.8):
             flags.append("Full Name looks like a nationality — verify")
         elif " " not in full_name:
             flags.append("Full Name is a single word — verify")
@@ -139,12 +144,15 @@ def process_file_backend(file_bytes, unique_filename, incoming_key, target_schem
             "Do not attach per-field confidence or remarks inside a value; use the dedicated "
             "'Confidence level for each extracted field' and 'Remarks for unclear or doubtful fields' keys for that instead.\n"
             f"Field-specific rules:\n{field_rules}\n"
-            "Never copy a value into the wrong field just because it sits next to a similar-looking label. "
-            "If a field has no explicitly labeled counterpart on the document, output 'N/A' for it — "
-            "do not substitute a different identifier or value just because it seems like the closest fit "
-            "(for example, do not put a passport's Citizenship No. into 'UID / Unified Number', and do not put "
-            "a Place of Birth into 'Site Location'). Any such leftover, unmapped values belong only in "
-            "'Any other visible document-specific fields', never forced into an unrelated schema key."
+            "Never substitute a DIFFERENT field's value into a field it doesn't belong to just because it "
+            "seems like the closest fit — for example, a passport's Citizenship No. is not a "
+            "'UID / Unified Number', and a Place of Birth is not a 'Site Location'. If no genuine counterpart "
+            "for a field exists on the document, output 'N/A' for it and put that unrelated leftover value in "
+            "'Any other visible document-specific fields' instead.\n"
+            "This does NOT mean you should leave a field as 'N/A' when the correct value for THAT SAME field "
+            "is clearly identifiable from context or position even without a printed label — e.g. if a "
+            "country/nationality word appears where nationality is normally shown, still fill in 'Nationality' "
+            "with it, and just note in 'Remarks' that it wasn't explicitly labeled."
         )
 
         last_error = None
