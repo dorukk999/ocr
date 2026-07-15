@@ -139,7 +139,12 @@ def process_file_backend(file_bytes, unique_filename, incoming_key, target_schem
             "Do not attach per-field confidence or remarks inside a value; use the dedicated "
             "'Confidence level for each extracted field' and 'Remarks for unclear or doubtful fields' keys for that instead.\n"
             f"Field-specific rules:\n{field_rules}\n"
-            "Never copy a value into the wrong field just because it sits next to a similar-looking label."
+            "Never copy a value into the wrong field just because it sits next to a similar-looking label. "
+            "If a field has no explicitly labeled counterpart on the document, output 'N/A' for it — "
+            "do not substitute a different identifier or value just because it seems like the closest fit "
+            "(for example, do not put a passport's Citizenship No. into 'UID / Unified Number', and do not put "
+            "a Place of Birth into 'Site Location'). Any such leftover, unmapped values belong only in "
+            "'Any other visible document-specific fields', never forced into an unrelated schema key."
         )
 
         last_error = None
