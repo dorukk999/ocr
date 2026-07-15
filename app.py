@@ -9,6 +9,7 @@ import json
 import base64
 import concurrent.futures
 import difflib
+import hashlib
 import re
 import time
 import uuid
@@ -260,27 +261,33 @@ def process_file_backend(file_bytes, unique_filename, incoming_key, target_schem
 CHUNK_SIZE = 50
 MAX_WORKERS = 5
 
+def file_signature(file_bytes):
+    return hashlib.sha1(file_bytes).hexdigest()
+
 def process_batch(files_data, api_key, schema, model, progress_bar, table_placeholder, total):
-    """files_data: list of (bytes, display_filename, unique_key). unique_key
+    """files_data: list of (bytes, display_filename, unique_key, signature). unique_key
     (not the filename) is used to track failures/retries, since the same
-    filename (e.g. 'EID.jpg') commonly repeats across different people."""
+    filename (e.g. 'EID.jpg') commonly repeats across different people. signature
+    is a content hash used to skip files already processed in this session."""
     processed_count = 0
     last_render = 0.0
     for i in range(0, len(files_data), CHUNK_SIZE):
         chunk = files_data[i:i + CHUNK_SIZE]
-        chunk_bytes_by_key = {uk: fb for fb, fn, uk in chunk}
+        chunk_lookup = {uk: (fb, sig) for fb, fn, uk, sig in chunk}
         with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-            futures = {executor.submit(process_file_backend, fb, fn, api_key, schema, model): uk for fb, fn, uk in chunk}
+            futures = {executor.submit(process_file_backend, fb, fn, api_key, schema, model): uk for fb, fn, uk, sig in chunk}
             for future in concurrent.futures.as_completed(futures):
                 unique_key = futures[future]
                 result = future.result()
                 result["__key"] = unique_key
                 st.session_state["batch_results"].append(result)
                 processed_count += 1
+                file_bytes, sig = chunk_lookup[unique_key]
                 if result.get("Document Type") == "FAILED":
-                    st.session_state["failed_bytes"][unique_key] = (result["Source_File_Name"], chunk_bytes_by_key[unique_key])
+                    st.session_state["failed_bytes"][unique_key] = (result["Source_File_Name"], file_bytes, sig)
                 else:
                     st.session_state["failed_bytes"].pop(unique_key, None)
+                    st.session_state["processed_signatures"].add(sig)
                 progress_bar.progress(processed_count / total)
                 now = time.time()
                 if now - last_render > 0.5 or processed_count == total:
@@ -327,21 +334,34 @@ def main():
 
     if "batch_results" not in st.session_state: st.session_state["batch_results"] = []
     if "failed_bytes" not in st.session_state: st.session_state["failed_bytes"] = {}
+    if "processed_signatures" not in st.session_state: st.session_state["processed_signatures"] = set()
 
     uploaded_files = st.file_uploader("Upload Documents", type=["png", "jpg", "jpeg", "pdf"], accept_multiple_files=True)
 
     if st.session_state["batch_results"] and st.button("🗑️ Clear All Results (start a new batch)"):
         st.session_state["batch_results"] = []
         st.session_state["failed_bytes"] = {}
+        st.session_state["processed_signatures"] = set()
         st.rerun()
 
     if uploaded_files and st.session_state["api_key"] and st.button("🚀 Run Extraction Pipeline"):
-        total = len(uploaded_files)
-        progress_bar = st.progress(0)
-        table_placeholder = st.empty()
-        files_data = [(f.read(), f.name, f"{f.name}::{uuid.uuid4().hex[:8]}") for f in uploaded_files]
-        process_batch(files_data, st.session_state["api_key"], active_schema, selected_model, progress_bar, table_placeholder, total)
-        st.success(f"🎉 Processing completed — {len(st.session_state['batch_results'])} total file(s) accumulated so far.")
+        files_data = []
+        skipped = 0
+        for f in uploaded_files:
+            fb = f.read()
+            sig = file_signature(fb)
+            if sig in st.session_state["processed_signatures"]:
+                skipped += 1
+                continue
+            files_data.append((fb, f.name, f"{f.name}::{uuid.uuid4().hex[:8]}", sig))
+        if skipped:
+            st.info(f"⏭️ Skipped {skipped} file(s) already processed earlier in this session (same content re-selected).")
+        if files_data:
+            total = len(files_data)
+            progress_bar = st.progress(0)
+            table_placeholder = st.empty()
+            process_batch(files_data, st.session_state["api_key"], active_schema, selected_model, progress_bar, table_placeholder, total)
+            st.success(f"🎉 Processing completed — {len(st.session_state['batch_results'])} total file(s) accumulated so far.")
 
     if st.session_state["failed_bytes"]:
         n_failed = len(st.session_state["failed_bytes"])
@@ -349,7 +369,7 @@ def main():
         if st.button(f"🔁 Retry {n_failed} Failed File(s) Only"):
             failed_keys = set(st.session_state["failed_bytes"].keys())
             st.session_state["batch_results"] = [r for r in st.session_state["batch_results"] if r.get("__key") not in failed_keys]
-            files_data = [(fb, fn, uk) for uk, (fn, fb) in st.session_state["failed_bytes"].items()]
+            files_data = [(fb, fn, uk, sig) for uk, (fn, fb, sig) in st.session_state["failed_bytes"].items()]
             total = len(files_data)
             progress_bar = st.progress(0)
             table_placeholder = st.empty()
