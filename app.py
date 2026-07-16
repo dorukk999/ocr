@@ -391,6 +391,26 @@ def optimize_image(file_bytes):
     img.save(buffer, format="JPEG", quality=90)
     return buffer.getvalue()
 
+def stringify_value(value):
+    """Guarantees every extracted field is a plain string (or already-primitive
+    scalar) before it's ever stored. The model is asked for plain strings but,
+    despite that, still sometimes returns a nested object for fields like
+    'Confidence level for each extracted field' or 'Any other visible
+    document-specific fields' (e.g. {'Sex': 'M', 'Issuing Place': 'Al Ain'}) —
+    the old flatten step only unwrapped the narrow {'value': X} shape and left
+    any other dict/list untouched. A raw dict/list surviving into the results
+    table crashes the live progress table with a pyarrow ArrowTypeError
+    ('Expected bytes, got a dict object') the moment st.dataframe() tries to
+    render it, which can abort the whole batch mid-run. Convert every
+    remaining dict/list into a readable string instead of dropping the data."""
+    if isinstance(value, dict):
+        if "value" in value and len(value) <= 2:
+            return stringify_value(value["value"])
+        return "; ".join(f"{k}: {stringify_value(v)}" for k, v in value.items())
+    if isinstance(value, list):
+        return "; ".join(stringify_value(v) for v in value)
+    return value
+
 def process_file_backend(file_bytes, unique_filename, incoming_key, target_schema, target_model):
     start_time = time.time()
     try:
@@ -436,9 +456,7 @@ def process_file_backend(file_bytes, unique_filename, incoming_key, target_schem
                 for col in target_schema:
                     found_key = next((k for k in extracted_json if k.lower().strip() == col.lower().strip()), None)
                     value = extracted_json[found_key] if found_key else "-"
-                    if isinstance(value, dict):
-                        value = value.get("value", value)
-                    safe_json[col] = value
+                    safe_json[col] = stringify_value(value)
                 safe_json["Review Flags"] = compute_review_flags(safe_json)
                 safe_json["Processing Time (s)"] = round(time.time() - start_time, 1)
                 return safe_json
@@ -523,7 +541,7 @@ def process_batch(files_data, api_key, schema, model, progress_bar, table_placeh
                 now = time.time()
                 if now - last_render > 0.5 or processed_count == total:
                     display_df = pd.DataFrame(st.session_state["batch_results"]).drop(columns="__key", errors="ignore")
-                    table_placeholder.dataframe(display_df, use_container_width=True)
+                    table_placeholder.dataframe(display_df, width='stretch')
                     last_render = now
         save_checkpoint()
 
