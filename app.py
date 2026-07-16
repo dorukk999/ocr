@@ -689,5 +689,49 @@ def main():
         )
         st.download_button("📥 Download CSV Report", df.to_csv(index=False).encode('utf-8-sig'), "Consolidated_Report.csv", "text/csv")
 
+    st.markdown("---")
+    st.subheader("🔗 Merge Previously Exported CSV Reports")
+    st.caption(
+        "If you scanned separate batches independently (e.g. one ZIP for Emirates ID / Passport / Security "
+        "Pass, another for Labor Card / Visa) and downloaded a 'Consolidated_Report.csv' for each, upload all "
+        "of those CSVs here to merge them into one consolidated per-employee report. This step does no OCR — "
+        "it just re-runs the same reference-ID / name-matching used above on data you already extracted, so "
+        "you don't need to keep both batches alive in one live session."
+    )
+    merge_files = st.file_uploader(
+        "Upload exported CSV report(s) to merge", type=["csv"], accept_multiple_files=True, key="merge_csv_uploader"
+    )
+    if merge_files and st.button("🔗 Merge & Build Consolidated Report"):
+        dfs = []
+        for f in merge_files:
+            try:
+                dfs.append(pd.read_csv(f, encoding="utf-8-sig"))
+            except Exception as e:
+                st.error(f"Couldn't read {f.name}: {e}")
+        if dfs:
+            combined = pd.concat(dfs, ignore_index=True)
+            if "Full Name" not in combined.columns:
+                st.error("Uploaded CSV(s) don't contain a 'Full Name' column — make sure you're uploading the 'Report' CSV export from this tool, not the 'Missing Documents' one.")
+            else:
+                merged_person_df = build_person_view(combined)
+                merged_missing_df = merged_person_df[["Reference ID", "Full Name", "Missing Documents", "Name Consistency Flag"]]
+                merged_sheets = {"Report": merged_person_df, "Missing Documents": merged_missing_df}
+                st.success(f"Merged {len(merge_files)} file(s) ({len(combined)} document rows) into {len(merged_person_df)} employee row(s).")
+                st.dataframe(merged_missing_df, width='stretch')
+                st.download_button(
+                    "📊 Download Merged Excel Report (.xlsx)",
+                    build_excel_bytes(merged_sheets),
+                    "Merged_Consolidated_Report.xlsx",
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="merged_excel_dl",
+                )
+                st.download_button(
+                    "📥 Download Merged CSV Report",
+                    merged_person_df.to_csv(index=False).encode('utf-8-sig'),
+                    "Merged_Consolidated_Report.csv",
+                    "text/csv",
+                    key="merged_csv_dl",
+                )
+
 if __name__ == "__main__":
     main()
