@@ -13,6 +13,7 @@ import hashlib
 import re
 import time
 import uuid
+import zipfile
 from PIL import Image
 import io
 
@@ -73,6 +74,7 @@ NATIONALITY_WORDS = {
 
 COLUMN_WIDTHS = {
     "Source_File_Name": 18, "Document Type": 20, "Full Name": 22,
+    "Reference ID": 16, "Missing Documents": 26,
     "Arabic Name": 22, "Nationality": 14,
     "Emirates ID Number (784-xxxx-xxxxxxx-x)": 24, "Passport Number": 16,
     "Work Permit Number (9 Digits)": 16, "Personal Number (14 Digits)": 16,
@@ -114,11 +116,15 @@ def compute_review_flags(safe_json):
     return "; ".join(flags)
 
 # Buckets a document falls into, used to prefix its columns in the per-person wide view.
+# Order matters: more specific keywords are checked before generic ones.
 DOC_TYPE_BUCKETS = [
-    ("Passport", ["passport"]),
     ("Emirates ID", ["resident identity", "emirates id", " eid", "identity card"]),
-    ("Security Pass", ["security pass", "defense", "military", "access card", "permit"]),
+    ("Passport", ["passport"]),
+    ("Visa", ["visa", "entry permit", "residence permit"]),
+    ("Labor Card", ["labor card", "labour card", "labor permit", "labour permit", "work permit"]),
+    ("Security Pass", ["security pass", "defense", "ministry of defense", "military", "access card"]),
 ]
+EXPECTED_DOC_TYPES = [name for name, _ in DOC_TYPE_BUCKETS]
 
 def classify_doc_type(document_type_text, filename):
     text = f"{document_type_text} {filename}".lower()
@@ -127,58 +133,104 @@ def classify_doc_type(document_type_text, filename):
             return bucket_name
     return "Other Document"
 
+def extract_reference_id(filename):
+    """Pulls the employee reference number from a filename like '1024_EID.jpg'
+    (everything before the first separator). Falls back to the full filename
+    stem if no separator is found."""
+    stem = str(filename).rsplit(".", 1)[0]
+    for sep in ("_", "-", " "):
+        if sep in stem:
+            return stem.split(sep, 1)[0].strip()
+    return stem.strip()
+
+SUPPORTED_EXTENSIONS = ("png", "jpg", "jpeg", "pdf")
+
+def extract_zip_files(zip_bytes):
+    """Reads a ZIP where each employee's documents live in their own folder
+    (e.g. '09592813/EID.jpg'). Returns (file_bytes, synthesized_filename) pairs
+    with the folder name prefixed onto the filename (e.g. '09592813_EID.jpg'),
+    so the existing reference-ID grouping picks it up with no renaming needed."""
+    results = []
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+        for info in zf.infolist():
+            if info.is_dir():
+                continue
+            name = info.filename
+            if name.startswith("__MACOSX/") or name.split("/")[-1].startswith("."):
+                continue
+            ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+            if ext not in SUPPORTED_EXTENSIONS:
+                continue
+            parts = [p for p in name.split("/") if p]
+            if len(parts) >= 2:
+                synthesized_name = f"{parts[-2]}_{parts[-1]}"
+            else:
+                synthesized_name = parts[-1] if parts else name
+            results.append((zf.read(info), synthesized_name))
+    return results
+
 def build_person_view(df):
-    """One row per person (grouped by Full Name), with each document's fields
-    prefixed by document type (e.g. 'Passport - Passport Number') so nothing
-    from different documents collides in the same column."""
+    """One row per employee, grouped by the reference number prefixed on each
+    filename (e.g. '1024_EID.jpg' -> '1024') rather than the OCR'd Full Name,
+    since the same person's name can read differently across document types.
+    Each document's fields are prefixed by document type (e.g. 'Passport -
+    Passport Number'). Also reports which of the 5 expected document types
+    are missing for each employee."""
     df = df.copy()
     df["__bucket"] = [classify_doc_type(dt, fn) for dt, fn in zip(df.get("Document Type", ""), df.get("Source_File_Name", ""))]
+    df["__ref"] = [extract_reference_id(fn) for fn in df.get("Source_File_Name", "")]
 
     shared_cols = ["Full Name", "Arabic Name", "Nationality"]
-    per_doc_cols = [c for c in df.columns if c not in shared_cols + ["__bucket", "Source_File_Name"]]
+    per_doc_cols = [c for c in df.columns if c not in shared_cols + ["__bucket", "__ref", "Source_File_Name"]]
 
     people = {}
     order = []
     for _, row in df.iterrows():
-        name = str(row.get("Full Name", "")).strip()
-        # Match names case-insensitively (e.g. "Manish Kumar Sah" vs "MANISH KUMAR SAH" are the same person)
-        key = name.lower() if name and name.lower() not in ("-", "n/a") else f"__unmatched__{row.get('Source_File_Name', '')}"
-        if key not in people:
-            people[key] = {"Full Name": name}
-            for c in shared_cols[1:]:
-                people[key][c] = row.get(c, "")
-            order.append(key)
-        for c in shared_cols[1:]:
-            if not str(people[key].get(c, "")).strip() or str(people[key][c]).strip().lower() in ("-", "n/a"):
-                people[key][c] = row.get(c, "")
+        ref = row["__ref"] or f"__unref__{row.get('Source_File_Name', '')}"
+        if ref not in people:
+            people[ref] = {"Reference ID": ref}
+            order.append(ref)
+        for c in shared_cols:
+            if not str(people[ref].get(c, "")).strip() or str(people[ref][c]).strip().lower() in ("-", "n/a"):
+                people[ref][c] = row.get(c, "")
         bucket = row["__bucket"]
         for c in per_doc_cols:
             col_name = f"{bucket} - {c}"
             value = row.get(c, "")
-            existing = people[key].get(col_name)
+            existing = people[ref].get(col_name)
             if existing is None or str(existing).strip().lower() in ("", "-", "n/a"):
-                people[key][col_name] = value
+                people[ref][col_name] = value
 
-    return pd.DataFrame([people[k] for k in order])
+    for ref in order:
+        missing = [b for b in EXPECTED_DOC_TYPES if str(people[ref].get(f"{b} - Document Type", "")).strip().lower() in ("", "-", "n/a")]
+        people[ref]["Missing Documents"] = ", ".join(missing) if missing else "None"
 
-def build_excel_bytes(df):
+    front_cols = ["Reference ID", "Full Name", "Missing Documents", "Arabic Name", "Nationality"]
+    result = pd.DataFrame([people[k] for k in order])
+    ordered_cols = front_cols + [c for c in result.columns if c not in front_cols]
+    return result[ordered_cols]
+
+def build_excel_bytes(sheets):
+    """sheets: dict of {sheet_name: DataFrame}. Writes one formatted sheet per entry."""
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="Report")
-        worksheet = writer.sheets["Report"]
-        wrap = Alignment(wrap_text=True, vertical="top")
-        for col_idx, col_name in enumerate(df.columns, start=1):
-            base_name = col_name.split(" - ", 1)[-1]
-            width = COLUMN_WIDTHS.get(col_name, COLUMN_WIDTHS.get(base_name, 18))
-            worksheet.column_dimensions[get_column_letter(col_idx)].width = width
-        for row in worksheet.iter_rows(min_row=1, max_row=worksheet.max_row):
-            for cell in row:
-                cell.alignment = wrap
-        for i in range(2, worksheet.max_row + 1):
-            worksheet.row_dimensions[i].height = 60
-        for cell in worksheet[1]:
-            cell.font = Font(bold=True)
-        worksheet.freeze_panes = "A2"
+        for sheet_name, df in sheets.items():
+            safe_name = sheet_name[:31]
+            df.to_excel(writer, index=False, sheet_name=safe_name)
+            worksheet = writer.sheets[safe_name]
+            wrap = Alignment(wrap_text=True, vertical="top")
+            for col_idx, col_name in enumerate(df.columns, start=1):
+                base_name = col_name.split(" - ", 1)[-1]
+                width = COLUMN_WIDTHS.get(col_name, COLUMN_WIDTHS.get(base_name, 18))
+                worksheet.column_dimensions[get_column_letter(col_idx)].width = width
+            for row in worksheet.iter_rows(min_row=1, max_row=worksheet.max_row):
+                for cell in row:
+                    cell.alignment = wrap
+            for i in range(2, worksheet.max_row + 1):
+                worksheet.row_dimensions[i].height = 60
+            for cell in worksheet[1]:
+                cell.font = Font(bold=True)
+            worksheet.freeze_panes = "A2"
     return buffer.getvalue()
 
 def optimize_image(file_bytes):
@@ -323,7 +375,7 @@ def main():
         custom_field = st.text_input("➕ Extract Custom Field")
         enable_consolidation = st.checkbox(
             "Enable Person-Based Consolidation",
-            help="One row per person instead of one row per document. Each document's fields get their own prefixed columns (e.g. 'Passport - Passport Number', 'Emirates ID - Date of Expiry'), so nothing from different documents collides in the same column."
+            help="One row per employee instead of one row per document. Requires files to be named with a shared reference number prefix, e.g. '1024_EID.jpg', '1024_Passport.jpg', '1024_Visa.jpg', '1024_LaborCard.jpg', '1024_SecurityPass.jpg' — grouping uses this number, not the OCR'd name. Each document's fields get their own prefixed columns, and a 'Missing Documents' report sheet lists which of the 5 expected documents (Emirates ID, Passport, Visa, Labor Card, Security Pass) are missing per employee."
         )
         if st.button("Logout"):
             st.session_state["authenticated"] = False
@@ -363,6 +415,30 @@ def main():
             process_batch(files_data, st.session_state["api_key"], active_schema, selected_model, progress_bar, table_placeholder, total)
             st.success(f"🎉 Processing completed — {len(st.session_state['batch_results'])} total file(s) accumulated so far.")
 
+    st.markdown("**Or upload a ZIP** (one folder per employee, e.g. `09592813/EID.jpg`, `09592813/Passport.jpg` — the folder name becomes the reference ID automatically, no renaming needed):")
+    zip_file = st.file_uploader("Upload ZIP", type=["zip"], label_visibility="collapsed")
+
+    if zip_file and st.session_state["api_key"] and st.button("📦 Process ZIP"):
+        extracted = extract_zip_files(zip_file.read())
+        files_data = []
+        skipped = 0
+        for fb, fn in extracted:
+            sig = file_signature(fb)
+            if sig in st.session_state["processed_signatures"]:
+                skipped += 1
+                continue
+            files_data.append((fb, fn, f"{fn}::{uuid.uuid4().hex[:8]}", sig))
+        if skipped:
+            st.info(f"⏭️ Skipped {skipped} file(s) already processed earlier in this session.")
+        if files_data:
+            total = len(files_data)
+            progress_bar = st.progress(0)
+            table_placeholder = st.empty()
+            process_batch(files_data, st.session_state["api_key"], active_schema, selected_model, progress_bar, table_placeholder, total)
+            st.success(f"🎉 ZIP processed — {len(st.session_state['batch_results'])} total file(s) accumulated so far.")
+        else:
+            st.warning("No new supported files (png/jpg/jpeg/pdf) found in the ZIP.")
+
     if st.session_state["failed_bytes"]:
         n_failed = len(st.session_state["failed_bytes"])
         st.warning(f"⚠️ {n_failed} file(s) failed after retries.")
@@ -380,10 +456,14 @@ def main():
         df = pd.DataFrame(st.session_state["batch_results"]).drop(columns="__key", errors="ignore")
         if enable_consolidation and "Full Name" in df.columns:
             df = build_person_view(df)
+            missing_df = df[["Reference ID", "Full Name", "Missing Documents"]]
+            sheets = {"Report": df, "Missing Documents": missing_df}
+        else:
+            sheets = {"Report": df}
 
         st.download_button(
             "📊 Download Excel Report (.xlsx)",
-            build_excel_bytes(df),
+            build_excel_bytes(sheets),
             "Consolidated_Report.xlsx",
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
