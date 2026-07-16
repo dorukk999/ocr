@@ -45,13 +45,18 @@ MAX_RETRIES = 3
 
 # Fields the model has been observed to confuse with one another; give it explicit, disambiguating rules.
 FIELD_HINTS = {
+    "Document Type": "A short description of the specific document that always includes one of these category words, so it can be reliably classified downstream: 'Identity' or 'Emirates ID' for a Resident Identity Card; 'Passport' for a passport; 'Visa' or 'Residence' or 'Entry Permit' for a UAE residence visa / entry permit (even if its own header just says 'Residence'); 'Labor Card' or 'Work Permit' for a labor/work permit card; 'Security Pass' or 'Defense' or 'Military' for a Ministry of Defense security/access pass. A Labor Card has no on-card title of its own (it never literally prints 'Labor Card' anywhere) — recognize it instead by its 'UNITED ARAB EMIRATES MINISTRY OF HUMAN RESOURCES & EMIRATISATION' header combined with 'Work Permit NO' and 'Personal NO' fields, and still label it 'Labor Card' / 'Work Permit' as the Document Type.",
     "Full Name": "the document holder's own given name(s) and surname, exactly as printed near a 'Name' / 'الاسم' label. Never the nationality, country, employer, or job title. Always output this in Latin/English script — if the document only shows the name in Arabic, phonetically transliterate it to Latin letters. Never put Arabic script in this field (Arabic script belongs only in 'Arabic Name'). Always order it as [Given Name(s)] [Surname] (e.g. 'Kali Bahadur Thapa'), never [Surname] [Given Name(s)] — even if a passport's own layout lists the surname field first, reorder it to given-name-first so the same person's name is formatted identically across every document type.",
     "Arabic Name": "the same person's name in Arabic script, next to the Arabic 'الاسم' label. Never the Arabic word for a country/nationality.",
     "Nationality": "the person's country/nationality, next to a 'Nationality' / 'الجنسية' label (e.g. Nepal, India). Never the person's name.",
+    "Date of Birth": "the document holder's date of birth. On an Emirates ID or Passport that has a machine-readable zone (MRZ — the row(s) of monospaced characters and '<' filler symbols at the bottom/back), the MRZ encodes this same date as a 6-digit YYMMDD string. Before finalizing this field, decode that MRZ date and cross-check it against the printed Date of Birth you extracted — they describe the same day, so if they disagree, re-read both and correct whichever was misread rather than reporting the printed value blindly.",
+    "Date of Expiry": "the document's expiry date. On an Emirates ID or Passport that has a machine-readable zone (MRZ — the row(s) of monospaced characters and '<' filler symbols at the bottom/back), the MRZ encodes this same date as a 6-digit YYMMDD string. Before finalizing this field, decode that MRZ date and cross-check it against the printed Date of Expiry you extracted — they describe the same day, so if they disagree, re-read both and correct whichever was misread rather than reporting the printed value blindly.",
+    "Emirates ID Number (784-xxxx-xxxxxxx-x)": "the person's Emirates ID number in the 784-YYYY-NNNNNNN-C format (15 digits total), next to an 'ID Number' / 'رقم الهوية' label. This can appear not only on the Emirates ID card itself but also on a Residence Visa / Entry Permit and occasionally a Security Pass — always capture it wherever this exact 15-digit, 784-prefixed, explicitly labeled number appears, regardless of document type. Never confuse it with the Passport Number, a Visa File Number, or any other number on the document.",
     "UID / Unified Number": "ONLY fill this in if the document has an explicit label reading 'Unified No.', 'UID', 'Unified Number', or the Arabic 'الرقم الموحد' directly next to the value. This field is an exception to the contextual-inference rule below: never derive, compute, or extract it from the Emirates ID number, card number, chip number, or any part of the MRZ string, even if the digit count matches — those are different fields, not the Unified Number. If there is no such explicit label, always output 'N/A' here, no matter how plausible a nearby number looks.",
-    "Issuing Authority": "the name of the organization/government body that issued the document (e.g. 'Federal Authority for Identity & Citizenship, Customs & Port Security', 'MOFA, Department of Passport', 'UAE Ministry of Defense') — usually found in the document's header/logo area. This is NEVER a city or place name like 'Al Ain' — a city where the document was issued is the 'Issuing Place' and belongs only in 'Any other visible document-specific fields', not here.",
-    "Personal Number (14 Digits)": "ONLY fill this in if the document has an explicit label reading 'Personal Number' or the Arabic 'الرقم الشخصي' directly next to the value. Never fill it in just because some other number on the document (a card number, security pass number, chip number, etc.) happens to be 14 digits long — matching digit count is not evidence it belongs in this field. If there is no such explicit label, output 'N/A'.",
-    "Work Permit Number (9 Digits)": "ONLY fill this in if the document has an explicit label reading 'Work Permit Number' or the Arabic equivalent directly next to the value. Never fill it in just because some other number happens to be 9 digits long. If there is no such explicit label, output 'N/A'.",
+    "Issuing Authority": "the name of the organization/government body that issued the document (e.g. 'Federal Authority for Identity & Citizenship, Customs & Port Security', 'MOFA, Department of Passport', 'UAE Ministry of Defense', 'Ministry of Human Resources & Emiratisation') — usually found in the document's header/logo area. This is NEVER a city or place name like 'Al Ain' — a city where the document was issued is the 'Issuing Place' and belongs only in 'Any other visible document-specific fields', not here.",
+    "Personal Number (14 Digits)": "This field is an exception to the contextual-inference rule below: ONLY fill it in if the document has an explicit label reading 'Personal Number', 'Personal NO', or the Arabic 'الرقم الشخصي' directly next to the value, AND that labeled value is exactly 14 digits long. This field is most reliably found, correctly labeled, on Labor Card / Work Permit documents. If a 'Personal No.' or similar label exists but its value is NOT exactly 14 digits (e.g. a 10 or 11-digit Personal No. on a passport), do NOT place it in this field — output 'N/A' here instead, and record the label and its actual value under 'Any other visible document-specific fields'. Never fill this field in just because some unrelated number on the document happens to be 14 digits long without that explicit label, and never round, pad, or trim a value to force it to 14 digits.",
+    "Work Permit Number (9 Digits)": "This field is an exception to the contextual-inference rule below: ONLY fill it in if the document has an explicit label reading 'Work Permit Number', 'Work Permit NO', or the Arabic equivalent directly next to the value, AND that labeled value is exactly 9 digits long. This field is most reliably found, correctly labeled, on Labor Card / Work Permit documents. On a Labor Card, the 'Work Permit NO' cell often also contains a small unrelated place name (e.g. 'العين' / 'Al Ain') printed next to or before the number — that place name is NOT part of the Work Permit Number and must be excluded; extract only the 9-digit number itself. If a similarly labeled value exists but is not exactly 9 digits, output 'N/A' here instead, and record the label and its actual value under 'Any other visible document-specific fields'. Never fill this field in just because some unrelated number happens to be 9 digits long without that explicit label, and never round, pad, or trim a value to force it to 9 digits.",
+    "Permit / Security Pass / Card Number": "the document's own primary reference/serial number — NOT the Emirates ID Number, Passport Number, Work Permit Number, or UID / Unified Number. On a Security Pass this is its card/pass number. On a Residence Visa / Entry Permit this is the immigration 'File' number (format like '152/2026/2/13668'), next to a 'File' / 'الملف' label — use this field for that File number. Never confuse this field with the Emirates ID Number (784-xxxx-xxxxxxx-x format) or the Passport Number even when they appear on the same document.",
 }
 
 # Common nationality/demonym words seen on UAE labor/ID documents — used to flag a Full Name
@@ -74,7 +79,7 @@ NATIONALITY_WORDS = {
 
 COLUMN_WIDTHS = {
     "Source_File_Name": 18, "Document Type": 20, "Full Name": 22,
-    "Reference ID": 16, "Missing Documents": 26,
+    "Reference ID": 16, "Missing Documents": 26, "Name Consistency Flag": 40,
     "Arabic Name": 22, "Nationality": 14,
     "Emirates ID Number (784-xxxx-xxxxxxx-x)": 24, "Passport Number": 16,
     "Work Permit Number (9 Digits)": 16, "Personal Number (14 Digits)": 16,
@@ -120,8 +125,8 @@ def compute_review_flags(safe_json):
 DOC_TYPE_BUCKETS = [
     ("Emirates ID", ["resident identity", "emirates id", " eid", "identity card"]),
     ("Passport", ["passport"]),
-    ("Visa", ["visa", "entry permit", "residence permit"]),
-    ("Labor Card", ["labor card", "labour card", "labor permit", "labour permit", "work permit"]),
+    ("Visa", ["visa", "entry permit", "residence permit", "residence", "residency"]),
+    ("Labor Card", ["labor card", "labour card", "labor permit", "labour permit", "work permit", "human resources", "emiratisation", "mohre"]),
     ("Security Pass", ["security pass", "defense", "ministry of defense", "military", "access card"]),
 ]
 EXPECTED_DOC_TYPES = [name for name, _ in DOC_TYPE_BUCKETS]
@@ -187,13 +192,53 @@ def limit_by_reference(extracted, limit):
         kept.append((fb, fn))
     return kept
 
+WORD_MISMATCH_RATIO_THRESHOLD = 0.8
+OVERALL_MISMATCH_RATIO_THRESHOLD = 0.5
+
+def _normalize_name(name):
+    return re.sub(r'\s+', ' ', str(name).strip().lower())
+
+def compute_name_consistency_flag(names_by_bucket):
+    """names_by_bucket: dict of {bucket: Full Name string} for one employee's
+    documents. Flags when two documents disagree on the person's name by more
+    than simple casing/spacing/spelling-variant differences — this is a
+    stronger signal than picking the first non-empty name, since a bad read on
+    one document would otherwise be silently discarded once a good name from
+    another document fills the shared 'Full Name' field first.
+    When both names have the same word count, compares word-by-word (catches
+    e.g. one wrong letter in a single given/middle name, which a whole-string
+    ratio would dilute and miss). When word counts differ — very common and
+    usually fine, since an Emirates ID often includes a father's name that a
+    passport omits — falls back to a lenient whole-string ratio so a merely
+    longer/shorter but otherwise matching name isn't flagged."""
+    entries = [(b, str(n).strip()) for b, n in names_by_bucket.items() if str(n).strip() and str(n).strip().lower() not in ("-", "n/a")]
+    mismatches = []
+    for i in range(len(entries)):
+        for j in range(i + 1, len(entries)):
+            bucket_a, name_a = entries[i]
+            bucket_b, name_b = entries[j]
+            tokens_a = _normalize_name(name_a).split(' ')
+            tokens_b = _normalize_name(name_b).split(' ')
+            if len(tokens_a) == len(tokens_b):
+                word_ratios = [difflib.SequenceMatcher(None, ta, tb).ratio() for ta, tb in zip(tokens_a, tokens_b)]
+                is_mismatch = min(word_ratios) < WORD_MISMATCH_RATIO_THRESHOLD
+            else:
+                overall_ratio = difflib.SequenceMatcher(None, _normalize_name(name_a), _normalize_name(name_b)).ratio()
+                is_mismatch = overall_ratio < OVERALL_MISMATCH_RATIO_THRESHOLD
+            if is_mismatch:
+                mismatches.append(f"{bucket_a}: '{name_a}' vs {bucket_b}: '{name_b}'")
+    return "; ".join(mismatches)
+
 def build_person_view(df):
     """One row per employee, grouped by the reference number prefixed on each
     filename (e.g. '1024_EID.jpg' -> '1024') rather than the OCR'd Full Name,
     since the same person's name can read differently across document types.
     Each document's fields are prefixed by document type (e.g. 'Passport -
     Passport Number'). Also reports which of the 5 expected document types
-    are missing for each employee."""
+    are missing for each employee, and flags employees whose Full Name reads
+    meaningfully differently across their own documents (worth a manual check,
+    since the merged 'Full Name' column only keeps the first non-N/A reading
+    and would otherwise hide a bad OCR read on one of the other documents)."""
     df = df.copy()
     df["__bucket"] = [classify_doc_type(dt, fn) for dt, fn in zip(df.get("Document Type", ""), df.get("Source_File_Name", ""))]
     df["__ref"] = [extract_reference_id(fn) for fn in df.get("Source_File_Name", "")]
@@ -203,15 +248,18 @@ def build_person_view(df):
 
     people = {}
     order = []
+    names_by_ref = {}
     for _, row in df.iterrows():
         ref = row["__ref"] or f"__unref__{row.get('Source_File_Name', '')}"
         if ref not in people:
             people[ref] = {"Reference ID": ref}
             order.append(ref)
+            names_by_ref[ref] = {}
         for c in shared_cols:
             if not str(people[ref].get(c, "")).strip() or str(people[ref][c]).strip().lower() in ("-", "n/a"):
                 people[ref][c] = row.get(c, "")
         bucket = row["__bucket"]
+        names_by_ref[ref][bucket] = row.get("Full Name", "")
         for c in per_doc_cols:
             col_name = f"{bucket} - {c}"
             value = row.get(c, "")
@@ -222,8 +270,9 @@ def build_person_view(df):
     for ref in order:
         missing = [b for b in EXPECTED_DOC_TYPES if str(people[ref].get(f"{b} - Document Type", "")).strip().lower() in ("", "-", "n/a")]
         people[ref]["Missing Documents"] = ", ".join(missing) if missing else "None"
+        people[ref]["Name Consistency Flag"] = compute_name_consistency_flag(names_by_ref[ref])
 
-    front_cols = ["Reference ID", "Full Name", "Missing Documents", "Arabic Name", "Nationality"]
+    front_cols = ["Reference ID", "Full Name", "Missing Documents", "Name Consistency Flag", "Arabic Name", "Nationality"]
     result = pd.DataFrame([people[k] for k in order])
     ordered_cols = front_cols + [c for c in result.columns if c not in front_cols]
     return result[ordered_cols]
@@ -481,7 +530,7 @@ def main():
         df = pd.DataFrame(st.session_state["batch_results"]).drop(columns="__key", errors="ignore")
         if enable_consolidation and "Full Name" in df.columns:
             df = build_person_view(df)
-            missing_df = df[["Reference ID", "Full Name", "Missing Documents"]]
+            missing_df = df[["Reference ID", "Full Name", "Missing Documents", "Name Consistency Flag"]]
             sheets = {"Report": df, "Missing Documents": missing_df}
         else:
             sheets = {"Report": df}
