@@ -169,6 +169,24 @@ def extract_zip_files(zip_bytes):
             results.append((zf.read(info), synthesized_name))
     return results
 
+def limit_by_reference(extracted, limit):
+    """Keeps every file belonging to the first `limit` distinct reference IDs
+    (i.e. the first N employee folders) rather than an arbitrary file-count
+    cutoff, so a test run always contains complete document sets instead of
+    splitting a folder in half."""
+    if limit <= 0:
+        return extracted
+    accepted_refs = []
+    kept = []
+    for fb, fn in extracted:
+        ref = extract_reference_id(fn)
+        if ref not in accepted_refs:
+            if len(accepted_refs) >= limit:
+                continue
+            accepted_refs.append(ref)
+        kept.append((fb, fn))
+    return kept
+
 def build_person_view(df):
     """One row per employee, grouped by the reference number prefixed on each
     filename (e.g. '1024_EID.jpg' -> '1024') rather than the OCR'd Full Name,
@@ -417,9 +435,16 @@ def main():
 
     st.markdown("**Or upload a ZIP** (one folder per employee, e.g. `09592813/EID.jpg`, `09592813/Passport.jpg` — the folder name becomes the reference ID automatically, no renaming needed):")
     zip_file = st.file_uploader("Upload ZIP", type=["zip"], label_visibility="collapsed")
+    zip_test_limit = st.number_input(
+        "Test with first N employees only (0 = process all)",
+        min_value=0, value=0, step=5,
+        help="Counted by folder, not by file — e.g. 10 means all documents for the first 10 employee folders, never a partial folder. Use this to try a small sample before committing to the full batch. Files already processed in a test run won't be reprocessed when you later run the rest."
+    )
 
     if zip_file and st.session_state["api_key"] and st.button("📦 Process ZIP"):
         extracted = extract_zip_files(zip_file.read())
+        if zip_test_limit > 0:
+            extracted = limit_by_reference(extracted, zip_test_limit)
         files_data = []
         skipped = 0
         for fb, fn in extracted:
