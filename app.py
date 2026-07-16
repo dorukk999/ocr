@@ -49,6 +49,7 @@ FIELD_HINTS = {
     "Full Name": "the document holder's own given name(s) and surname, exactly as printed near a 'Name' / 'الاسم' label. Never the nationality, country, employer, or job title. Always output this in Latin/English script — if the document only shows the name in Arabic, phonetically transliterate it to Latin letters. Never put Arabic script in this field (Arabic script belongs only in 'Arabic Name'). Always order it as [Given Name(s)] [Surname] (e.g. 'Kali Bahadur Thapa'), never [Surname] [Given Name(s)] — even if a passport's own layout lists the surname field first, reorder it to given-name-first so the same person's name is formatted identically across every document type.",
     "Arabic Name": "the same person's name in Arabic script, next to the Arabic 'الاسم' label. Never the Arabic word for a country/nationality.",
     "Nationality": "the person's country/nationality, next to a 'Nationality' / 'الجنسية' label (e.g. Nepal, India). Never the person's name.",
+    "Occupation / Trade": "the document holder's job/trade, next to a 'Profession' / 'المهنة' label. If the label's value is printed in Arabic, TRANSLATE it to its standard English trade name — do not phonetically transliterate it into a nonsense English word. For example, the Arabic 'سباك' must be translated as 'Plumber', never transliterated as something like 'Sabak', 'Stak', or 'Stock'. If you do not recognize the specific Arabic trade word, still attempt a best-effort English translation of its meaning rather than a sound-alike guess, and note the uncertainty in Remarks.",
     "Date of Birth": "the document holder's date of birth. On an Emirates ID or Passport that has a machine-readable zone (MRZ — the row(s) of monospaced characters and '<' filler symbols at the bottom/back), the MRZ encodes this same date as a 6-digit YYMMDD string. Before finalizing this field, decode that MRZ date and cross-check it against the printed Date of Birth you extracted — they describe the same day, so if they disagree, re-read both and correct whichever was misread rather than reporting the printed value blindly.",
     "Date of Expiry": "the document's expiry date. On an Emirates ID or Passport that has a machine-readable zone (MRZ — the row(s) of monospaced characters and '<' filler symbols at the bottom/back), the MRZ encodes this same date as a 6-digit YYMMDD string. Before finalizing this field, decode that MRZ date and cross-check it against the printed Date of Expiry you extracted — they describe the same day, so if they disagree, re-read both and correct whichever was misread rather than reporting the printed value blindly.",
     "Emirates ID Number (784-xxxx-xxxxxxx-x)": "the person's Emirates ID number in the 784-YYYY-NNNNNNN-C format (15 digits total), next to an 'ID Number' / 'رقم الهوية' label. This can appear not only on the Emirates ID card itself but also on a Residence Visa / Entry Permit and occasionally a Security Pass — always capture it wherever this exact 15-digit, 784-prefixed, explicitly labeled number appears, regardless of document type. Never confuse it with the Passport Number, a Visa File Number, or any other number on the document.",
@@ -79,7 +80,8 @@ NATIONALITY_WORDS = {
 
 COLUMN_WIDTHS = {
     "Source_File_Name": 18, "Document Type": 20, "Full Name": 22,
-    "Reference ID": 16, "Missing Documents": 26, "Name Consistency Flag": 40,
+    "Reference ID": 20, "Missing Documents": 26, "Name Consistency Flag": 40,
+    "Reference Match Method": 30,
     "Arabic Name": 22, "Nationality": 14,
     "Emirates ID Number (784-xxxx-xxxxxxx-x)": 24, "Passport Number": 16,
     "Work Permit Number (9 Digits)": 16, "Personal Number (14 Digits)": 16,
@@ -132,9 +134,20 @@ DOC_TYPE_BUCKETS = [
 EXPECTED_DOC_TYPES = [name for name, _ in DOC_TYPE_BUCKETS]
 
 def classify_doc_type(document_type_text, filename):
-    text = f"{document_type_text} {filename}".lower()
+    """Classifies primarily from the model's own Document Type text. The
+    filename is only consulted as a last-resort fallback when Document Type
+    matched no bucket at all — using it as a primary signal is unsafe when a
+    whole batch sits in one shared folder (e.g. a ZIP whose single top-level
+    folder is named 'Labour & Visa'), since that folder name gets prefixed
+    onto every filename and would otherwise make a Labor Card file match the
+    'Visa' bucket just because the word 'Visa' appears in its folder name."""
+    doc_type_text = str(document_type_text).lower()
     for bucket_name, keywords in DOC_TYPE_BUCKETS:
-        if any(kw in text for kw in keywords):
+        if any(kw in doc_type_text for kw in keywords):
+            return bucket_name
+    filename_text = str(filename).lower()
+    for bucket_name, keywords in DOC_TYPE_BUCKETS:
+        if any(kw in filename_text for kw in keywords):
             return bucket_name
     return "Other Document"
 
@@ -198,6 +211,64 @@ OVERALL_MISMATCH_RATIO_THRESHOLD = 0.5
 def _normalize_name(name):
     return re.sub(r'\s+', ' ', str(name).strip().lower())
 
+REFERENCE_ID_RE = re.compile(r'^[A-Za-z0-9]{3,20}$')
+NAME_MATCH_ACCEPT_THRESHOLD = 0.7
+
+def looks_like_reference_id(candidate):
+    """True for filename-derived tokens that look like a real employee reference
+    code (e.g. '09592813', 'A00055512') rather than a generic shared folder/batch
+    name (e.g. 'Labour & Visa') that lands in the same spot when a batch of files
+    isn't organized into per-employee folders."""
+    candidate = str(candidate).strip()
+    return bool(REFERENCE_ID_RE.match(candidate)) and any(c.isdigit() for c in candidate)
+
+def name_similarity(name_a, name_b):
+    return difflib.SequenceMatcher(None, _normalize_name(name_a), _normalize_name(name_b)).ratio()
+
+def resolve_references(df):
+    """Assigns each row a final grouping key and a human-readable note on how it
+    was matched. Rows whose filename already yields a real reference code (e.g.
+    from a ZIP organized into per-employee folders, like the Emirates ID /
+    Passport / Security Pass batch) keep that code as-is. Rows that don't — e.g.
+    a separate Labor Card / Visa batch sitting in one shared folder with no
+    per-employee subfolders — get matched to an existing reference code by
+    comparing their OCR'd Full Name against the names already seen for each
+    reference code, so a Labor Card scanned in a completely separate upload can
+    still land on the same employee's row as their Emirates ID / Passport /
+    Security Pass. If no confident name match is found, the document is grouped
+    by its own normalized Full Name instead, so at least multiple such documents
+    for the same new, not-yet-reference-coded person still end up on one row
+    together rather than scattering across unrelated rows."""
+    raw_refs = [extract_reference_id(fn) for fn in df.get("Source_File_Name", "")]
+    full_names = [str(n) for n in df.get("Full Name", "")]
+
+    names_by_real_ref = {}
+    for raw_ref, name in zip(raw_refs, full_names):
+        if looks_like_reference_id(raw_ref) and name.strip() and name.strip().lower() not in ("-", "n/a"):
+            names_by_real_ref.setdefault(raw_ref, []).append(name)
+
+    final_refs, match_notes = [], []
+    for raw_ref, name in zip(raw_refs, full_names):
+        if looks_like_reference_id(raw_ref):
+            final_refs.append(raw_ref)
+            match_notes.append("Reference ID")
+            continue
+        name_norm = _normalize_name(name)
+        best_ref, best_score = None, 0.0
+        if name_norm and name_norm not in ("-", "n/a"):
+            for ref, known_names in names_by_real_ref.items():
+                score = max(name_similarity(name, known) for known in known_names)
+                if score > best_score:
+                    best_ref, best_score = ref, score
+        if best_ref and best_score >= NAME_MATCH_ACCEPT_THRESHOLD:
+            final_refs.append(best_ref)
+            match_notes.append(f"Matched by name ({best_score:.0%} similarity)")
+        else:
+            fallback_key = name_norm if name_norm and name_norm not in ("-", "n/a") else raw_ref
+            final_refs.append(f"__byname__{fallback_key}")
+            match_notes.append("Unmatched — no reference ID or name match found")
+    return final_refs, match_notes
+
 def compute_name_consistency_flag(names_by_bucket):
     """names_by_bucket: dict of {bucket: Full Name string} for one employee's
     documents. Flags when two documents disagree on the person's name by more
@@ -238,10 +309,15 @@ def build_person_view(df):
     are missing for each employee, and flags employees whose Full Name reads
     meaningfully differently across their own documents (worth a manual check,
     since the merged 'Full Name' column only keeps the first non-N/A reading
-    and would otherwise hide a bad OCR read on one of the other documents)."""
+    and would otherwise hide a bad OCR read on one of the other documents).
+    Also handles a batch (e.g. Labor Card / Visa files) that was never
+    organized into per-employee reference-ID folders, by matching those
+    documents onto an existing employee via Full Name similarity — see
+    resolve_references() — so a separately-scanned ZIP can still land on the
+    same row as that person's Emirates ID / Passport / Security Pass."""
     df = df.copy()
     df["__bucket"] = [classify_doc_type(dt, fn) for dt, fn in zip(df.get("Document Type", ""), df.get("Source_File_Name", ""))]
-    df["__ref"] = [extract_reference_id(fn) for fn in df.get("Source_File_Name", "")]
+    df["__ref"], df["Reference Match Method"] = resolve_references(df)
 
     shared_cols = ["Full Name", "Arabic Name", "Nationality"]
     per_doc_cols = [c for c in df.columns if c not in shared_cols + ["__bucket", "__ref", "Source_File_Name"]]
@@ -252,7 +328,11 @@ def build_person_view(df):
     for _, row in df.iterrows():
         ref = row["__ref"] or f"__unref__{row.get('Source_File_Name', '')}"
         if ref not in people:
-            people[ref] = {"Reference ID": ref}
+            display_ref = ref
+            if ref.startswith("__byname__"):
+                name_guess = str(row.get("Full Name", "")).strip() or ref[len("__byname__"):]
+                display_ref = f"NO REF ID — {name_guess.title()}"
+            people[ref] = {"Reference ID": display_ref}
             order.append(ref)
             names_by_ref[ref] = {}
         for c in shared_cols:
@@ -442,7 +522,7 @@ def main():
         custom_field = st.text_input("➕ Extract Custom Field")
         enable_consolidation = st.checkbox(
             "Enable Person-Based Consolidation",
-            help="One row per employee instead of one row per document. Requires files to be named with a shared reference number prefix, e.g. '1024_EID.jpg', '1024_Passport.jpg', '1024_Visa.jpg', '1024_LaborCard.jpg', '1024_SecurityPass.jpg' — grouping uses this number, not the OCR'd name. Each document's fields get their own prefixed columns, and a 'Missing Documents' report sheet lists which of the 5 expected documents (Emirates ID, Passport, Visa, Labor Card, Security Pass) are missing per employee."
+            help="One row per employee instead of one row per document. Best case: files are named with a shared reference number prefix, e.g. '1024_EID.jpg', '1024_Passport.jpg', '1024_Visa.jpg', '1024_LaborCard.jpg', '1024_SecurityPass.jpg' — grouping uses this number, not the OCR'd name. If a document's filename doesn't yield a real reference number (e.g. a separate Labor Card/Visa batch scanned from one shared folder, uploaded in its own ZIP after the reference-ID batch), it's matched onto an existing employee by comparing OCR'd Full Name instead — check the 'Reference Match Method' column to see which documents were matched this way, since name-matching is less certain than a real reference number. Each document's fields get their own prefixed columns, and a 'Missing Documents' report sheet lists which of the 5 expected documents (Emirates ID, Passport, Visa, Labor Card, Security Pass) are missing per employee."
         )
         if st.button("Logout"):
             st.session_state["authenticated"] = False
