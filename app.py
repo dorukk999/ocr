@@ -10,6 +10,7 @@ import base64
 import concurrent.futures
 import difflib
 import hashlib
+import os
 import re
 import time
 import uuid
@@ -459,9 +460,40 @@ def process_file_backend(file_bytes, unique_filename, incoming_key, target_schem
 
 CHUNK_SIZE = 50
 MAX_WORKERS = 5
+CHECKPOINT_PATH = "batch_checkpoint.json"
 
 def file_signature(file_bytes):
     return hashlib.sha1(file_bytes).hexdigest()
+
+def save_checkpoint():
+    """Best-effort local-disk backup of accumulated results, written after every
+    chunk. Streamlit Cloud can drop and reconnect the browser's WebSocket during
+    a slow/large upload (e.g. a second ZIP), which hands the reconnected session
+    a brand-new, empty st.session_state — silently wiping every result gathered
+    so far even though the underlying app process (and this file) is untouched.
+    Never let a checkpoint write failure interrupt the actual extraction run."""
+    try:
+        data = {
+            "batch_results": st.session_state["batch_results"],
+            "processed_signatures": list(st.session_state["processed_signatures"]),
+        }
+        with open(CHECKPOINT_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+    except Exception:
+        pass
+
+def load_checkpoint():
+    try:
+        with open(CHECKPOINT_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+def clear_checkpoint():
+    try:
+        os.remove(CHECKPOINT_PATH)
+    except Exception:
+        pass
 
 def process_batch(files_data, api_key, schema, model, progress_bar, table_placeholder, total):
     """files_data: list of (bytes, display_filename, unique_key, signature). unique_key
@@ -493,6 +525,7 @@ def process_batch(files_data, api_key, schema, model, progress_bar, table_placeh
                     display_df = pd.DataFrame(st.session_state["batch_results"]).drop(columns="__key", errors="ignore")
                     table_placeholder.dataframe(display_df, use_container_width=True)
                     last_render = now
+        save_checkpoint()
 
 def main():
     st.title("📂 Corporate AI Data Extraction Tool")
@@ -531,9 +564,23 @@ def main():
     active_schema = OFFICIAL_SCHEMA_ORDER.copy()
     if custom_field: active_schema.insert(19, custom_field)
 
-    if "batch_results" not in st.session_state: st.session_state["batch_results"] = []
+    first_init = "batch_results" not in st.session_state
+    if first_init: st.session_state["batch_results"] = []
     if "failed_bytes" not in st.session_state: st.session_state["failed_bytes"] = {}
     if "processed_signatures" not in st.session_state: st.session_state["processed_signatures"] = set()
+
+    if first_init and not st.session_state["batch_results"]:
+        checkpoint = load_checkpoint()
+        if checkpoint and checkpoint.get("batch_results"):
+            st.warning(f"⚠️ Found {len(checkpoint['batch_results'])} result(s) saved from a previous session (e.g. before a connection drop). Restore them before continuing?")
+            col_restore, col_discard = st.columns(2)
+            if col_restore.button("🔄 Restore previous results"):
+                st.session_state["batch_results"] = checkpoint["batch_results"]
+                st.session_state["processed_signatures"] = set(checkpoint.get("processed_signatures", []))
+                st.rerun()
+            if col_discard.button("🗑️ Discard and start fresh"):
+                clear_checkpoint()
+                st.rerun()
 
     uploaded_files = st.file_uploader("Upload Documents", type=["png", "jpg", "jpeg", "pdf"], accept_multiple_files=True)
 
@@ -541,6 +588,7 @@ def main():
         st.session_state["batch_results"] = []
         st.session_state["failed_bytes"] = {}
         st.session_state["processed_signatures"] = set()
+        clear_checkpoint()
         st.rerun()
 
     if uploaded_files and st.session_state["api_key"] and st.button("🚀 Run Extraction Pipeline"):
