@@ -11,6 +11,7 @@ import concurrent.futures
 import difflib
 import hashlib
 import os
+import random
 import re
 import time
 import uuid
@@ -42,7 +43,9 @@ OFFICIAL_SCHEMA_ORDER = [
     "Confidence level for each extracted field", "Remarks for unclear or doubtful fields"
 ]
 
-MAX_RETRIES = 3
+MAX_RETRIES = 6
+BASE_BACKOFF_SECONDS = 6
+MAX_BACKOFF_SECONDS = 60
 
 # Fields the model has been observed to confuse with one another; give it explicit, disambiguating rules.
 FIELD_HINTS = {
@@ -224,7 +227,30 @@ def looks_like_reference_id(candidate):
     return bool(REFERENCE_ID_RE.match(candidate)) and any(c.isdigit() for c in candidate)
 
 def name_similarity(name_a, name_b):
-    return difflib.SequenceMatcher(None, _normalize_name(name_a), _normalize_name(name_b)).ratio()
+    """Word-overlap ratio, not raw character similarity. Character-level
+    SequenceMatcher was found to badly overrate two DIFFERENT people who share
+    a common surname/father's-name pattern — e.g. 'Md Omor Faruk Abul Kalam'
+    vs 'MD Rakib Abdul Kalam' scored 77% purely from the shared 'MD' and
+    'KALAM' tokens plus a fuzzy 'Abul'~'Abdul' character overlap, enough to
+    clear the match threshold and merge a stranger's Visa into the wrong
+    employee's row. Counting only exact whole-word matches (no per-word
+    fuzziness) fixes that specific failure mode. It still matches real
+    same-person variants correctly: an Emirates ID's full father's-name-included
+    form is always in the reference pool alongside a shorter Passport-style
+    name, and a Labor Card / Visa document's Full Name has consistently
+    mirrored that same full form in every sample reviewed — so the exact-word
+    match still lands at 100% for genuine matches while rejecting look-alikes."""
+    tokens_a = _normalize_name(name_a).split(' ')
+    tokens_b = _normalize_name(name_b).split(' ')
+    if not tokens_a or not tokens_b:
+        return 0.0
+    remaining_b = list(tokens_b)
+    matched = 0
+    for token in tokens_a:
+        if token in remaining_b:
+            remaining_b.remove(token)
+            matched += 1
+    return matched / max(len(tokens_a), len(tokens_b))
 
 def resolve_references(df):
     """Assigns each row a final grouping key and a human-readable note on how it
@@ -464,7 +490,15 @@ def process_file_backend(file_bytes, unique_filename, incoming_key, target_schem
                 last_error = e
                 is_retryable = e.code in (429, 500, 503)
                 if is_retryable and attempt < MAX_RETRIES - 1:
-                    time.sleep(2 ** attempt)
+                    # 429 (quota) and 503 ("high demand") both need real wall-clock
+                    # time to clear, not milliseconds — the old 1s/2s backoff was
+                    # far too short for a 700+/400+ file run and left files
+                    # permanently FAILED instead of recovering. Exponential backoff
+                    # with a jitter (so concurrent workers don't all retry in the
+                    # same instant and re-trigger the same rate limit) capped at
+                    # MAX_BACKOFF_SECONDS.
+                    delay = min(MAX_BACKOFF_SECONDS, BASE_BACKOFF_SECONDS * (2 ** attempt))
+                    time.sleep(delay + random.uniform(0, delay * 0.25))
                     continue
                 raise
         raise last_error
@@ -513,13 +547,16 @@ def clear_checkpoint():
     except Exception:
         pass
 
-def process_batch(files_data, api_key, schema, model, progress_bar, table_placeholder, total):
-    """files_data: list of (bytes, display_filename, unique_key, signature). unique_key
-    (not the filename) is used to track failures/retries, since the same
-    filename (e.g. 'EID.jpg') commonly repeats across different people. signature
-    is a content hash used to skip files already processed in this session."""
+AUTO_RETRY_SWEEPS = 3
+AUTO_RETRY_COOLDOWN_SECONDS = 45
+
+def _run_single_pass(files_data, api_key, schema, model, progress_bar, table_placeholder):
+    """One pass over files_data (chunked, threaded). Returns the list of unique_keys
+    that ended up FAILED during this specific pass."""
+    total = len(files_data)
     processed_count = 0
     last_render = 0.0
+    failed_keys_this_pass = []
     for i in range(0, len(files_data), CHUNK_SIZE):
         chunk = files_data[i:i + CHUNK_SIZE]
         chunk_lookup = {uk: (fb, sig) for fb, fn, uk, sig in chunk}
@@ -534,16 +571,52 @@ def process_batch(files_data, api_key, schema, model, progress_bar, table_placeh
                 file_bytes, sig = chunk_lookup[unique_key]
                 if result.get("Document Type") == "FAILED":
                     st.session_state["failed_bytes"][unique_key] = (result["Source_File_Name"], file_bytes, sig)
+                    failed_keys_this_pass.append(unique_key)
                 else:
                     st.session_state["failed_bytes"].pop(unique_key, None)
                     st.session_state["processed_signatures"].add(sig)
-                progress_bar.progress(processed_count / total)
+                progress_bar.progress(min(processed_count / total, 1.0))
                 now = time.time()
                 if now - last_render > 0.5 or processed_count == total:
                     display_df = pd.DataFrame(st.session_state["batch_results"]).drop(columns="__key", errors="ignore")
                     table_placeholder.dataframe(display_df, width='stretch')
                     last_render = now
         save_checkpoint()
+    return failed_keys_this_pass
+
+def process_batch(files_data, api_key, schema, model, progress_bar, table_placeholder, total):
+    """files_data: list of (bytes, display_filename, unique_key, signature). unique_key
+    (not the filename) is used to track failures/retries, since the same
+    filename (e.g. 'EID.jpg') commonly repeats across different people. signature
+    is a content hash used to skip files already processed in this session.
+
+    On top of each file's own internal retries (see process_file_backend), a large
+    run (hundreds of files) commonly still leaves a handful of files FAILED from
+    sustained rate-limiting or a transient Gemini outage. Rather than requiring the
+    user to notice this and press 'Retry Failed' themselves, automatically sweep
+    just the files that failed in THIS run up to AUTO_RETRY_SWEEPS more times, each
+    after a cooldown pause long enough for a rate-limit window or outage to clear."""
+    failed_keys = _run_single_pass(files_data, api_key, schema, model, progress_bar, table_placeholder)
+
+    for sweep in range(AUTO_RETRY_SWEEPS):
+        if not failed_keys:
+            break
+        st.info(f"⏳ {len(failed_keys)} file(s) failed (likely rate limiting) — waiting {AUTO_RETRY_COOLDOWN_SECONDS}s then auto-retrying (attempt {sweep + 1}/{AUTO_RETRY_SWEEPS})...")
+        time.sleep(AUTO_RETRY_COOLDOWN_SECONDS)
+        retry_files_data = [
+            (fb, fn, uk, sig)
+            for uk in failed_keys
+            for fn, fb, sig in [st.session_state["failed_bytes"][uk]]
+            if uk in st.session_state["failed_bytes"]
+        ]
+        if not retry_files_data:
+            break
+        retry_keys = {uk for _, _, uk, _ in retry_files_data}
+        st.session_state["batch_results"] = [r for r in st.session_state["batch_results"] if r.get("__key") not in retry_keys]
+        failed_keys = _run_single_pass(retry_files_data, api_key, schema, model, progress_bar, table_placeholder)
+
+    if failed_keys:
+        st.warning(f"⚠️ {len(failed_keys)} file(s) still failed after {AUTO_RETRY_SWEEPS} automatic retries. Use the '🔁 Retry Failed Files' button below whenever you're ready — no need to re-upload anything.")
 
 def main():
     st.title("📂 Corporate AI Data Extraction Tool")
